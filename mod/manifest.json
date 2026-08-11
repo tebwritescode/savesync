@@ -1,9 +1,9 @@
 {
   "id": "savesync",
   "name": "SaveSync",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "author": "Teb",
-  "description": "Automatic cross-device save syncing. Sign in once, and your save follows you to every device you play on. The storage is yours -- your own GitHub, Dropbox or self-hosted server -- and only save files are ever uploaded, never ROMs or game content. Conflicting changes are never silently overwritten and every version is kept.",
+  "description": "Automatic cross-device saves for Gen1Recomp - your save follows you to every device you play on, stored on free space that belongs to you.",
   "api": 2,
   "entry": "main.lua",
   "permissions": [

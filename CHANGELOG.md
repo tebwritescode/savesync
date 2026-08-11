@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-08-11
+
+### Changed
+- One description, everywhere. The README pitch, the GitHub and Gitea repo
+  descriptions, the mod manifest and both index summaries now carry the same
+  sentence, so a player meets the same words wherever they first find it.
+- A plain hyphen rather than an em dash in that sentence: the manifest text
+  can reach the in-game font, and the Gen 1 charmap has no em dash to draw.
+
 ## [1.6.0] - 2026-08-11
 
 ### Added

@@ -1,8 +1,8 @@
 # SaveSync
 
-**Automatic cross-device saves for [Gen1Recomp](https://github.com/bryanthaboi/gen1recomp)
-— your save follows you to every device you play on, stored on free space that
-belongs to you.**
+**Automatic cross-device saves for
+[Gen1Recomp](https://github.com/bryanthaboi/gen1recomp) - your save follows you
+to every device you play on, stored on free space that belongs to you.**
 
 Play on the desktop, close it, open the game on the laptop, press CONTINUE.
 Your save is there. Sign in once and it looks after itself.
