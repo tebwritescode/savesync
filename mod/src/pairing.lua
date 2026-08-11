@@ -1,6 +1,6 @@
 -- Setup codes: one string that moves a working connection to another device.
 --
--- FORMAT.  `G1CS1.<base64url of a small JSON object>` -- a version prefix so
+-- FORMAT.  `SSYNC1.<base64url of a small JSON object>` -- a version prefix so
 -- a future format can be told apart at a glance, then the provider config the
 -- other device needs.  URL-safe base64 with no padding, so the code survives
 -- a chat app, a QR reader, a text file, or being read aloud badly.
@@ -18,13 +18,13 @@
 -- no code at all.  The code exists for the cases where that is not true (a
 -- self-hosted server) or not convenient (a device with no browser).
 
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
-local Providers = CLOUD_SAVES_INCLUDE("src/providers/init.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
+local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
 
 local Pairing = {}
 
-local PREFIX = "G1CS1."
+local PREFIX = "SSYNC1."
 
 --- Build the code another device pastes.  nil when the current provider has
 --- nothing safe to hand over (and the UI then says "just sign in again").
@@ -43,7 +43,7 @@ end
 function Pairing.decode(text)
   if type(text) ~= "string" then return nil, "nothing pasted" end
   local s = text:gsub("%s", "")
-  s = s:gsub("^gen1recomp://cloudsaves?%??c?=?", "")
+  s = s:gsub("^gen1recomp://savesync?%??c?=?", "")
   local body = s:match("^" .. PREFIX:gsub("%.", "%%.") .. "(.+)$")
   if not body then
     return nil, "that does not look like a setup code"
@@ -64,7 +64,7 @@ end
 --- would rather send themselves a URL than a bare string.
 function Pairing.uri(code)
   if not code then return nil end
-  return "gen1recomp://cloudsaves?c=" .. code
+  return "gen1recomp://savesync?c=" .. code
 end
 
 --- Break a long code into fixed-width lines so it can be read off a 160x144

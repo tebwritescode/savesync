@@ -95,9 +95,9 @@ None of this is uploaded.
 
 | path (in the LÖVE save directory) | contents |
 | --- | --- |
-| `cloud_saves/config.lua` | provider, credentials, device id, per-key `syncedHash`/`syncedSeq` |
-| `cloud_saves/backups/<key>/<stamp>-<hash>-<tag>.sav` | the last ten displaced local saves |
-| `cloud_saves/tmp/` | staged request bodies, deleted immediately after use |
+| `savesync/config.lua` | provider, credentials, device id, per-key `syncedHash`/`syncedSeq` |
+| `savesync/backups/<key>/<stamp>-<hash>-<tag>.sav` | the last ten displaced local saves |
+| `savesync/tmp/` | staged request bodies, deleted immediately after use |
 
 The config deliberately does **not** live in the game save. `mod.save:set`
 would put the access token into `save.lua` — the very file this mod uploads —
@@ -106,7 +106,7 @@ token part of the synced state.
 
 ## Setup codes
 
-`G1CS1.` + URL-safe base64 (no padding) of a JSON object:
+`SSYNC1.` + URL-safe base64 (no padding) of a JSON object:
 
 ```json
 { "provider": "server", "url": "https://saves.example.com", "token": "..." }
@@ -116,7 +116,7 @@ It says *where the saves live*, never what they are. No save data is ever in
 a setup code.
 
 `Pairing.decode` also accepts the code wrapped as
-`gen1recomp://cloudsaves?c=<code>`, and tolerates surrounding whitespace and
+`gen1recomp://savesync?c=<code>`, and tolerates surrounding whitespace and
 line breaks, because that is what people actually paste.
 
 ## The self-hosted HTTP API

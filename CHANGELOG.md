@@ -24,9 +24,9 @@ First release.
   stops sync and asks the player, and is never resolved by timestamp.
 - Ten local backups and ten cloud history versions per save; every path that
   replaces a save backs the outgoing one up first.
-- Setup codes (`G1CS1.<base64url>`) for pairing, via clipboard or a
-  `cloud_saves/setup-code.txt` fallback on devices without one.
-- In-game Cloud Saves screen on both the title menu and the Start menu.
+- Setup codes (`SSYNC1.<base64url>`) for pairing, via clipboard or a
+  `savesync/setup-code.txt` fallback on devices without one.
+- In-game SaveSync screen on both the title menu and the Start menu.
 - Downloads are held back while a session is live, because a running game
   would write the old save back out over them.
 - Async HTTP on retiring worker threads, so no frame blocks and closing the

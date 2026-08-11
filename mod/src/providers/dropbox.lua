@@ -12,9 +12,9 @@
 -- Access tokens last four hours; `token_access_type=offline` gets a refresh
 -- token alongside, and a 401 refreshes and retries exactly once.
 
-local Op = CLOUD_SAVES_INCLUDE("src/op.lua")
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
+local Op = SAVESYNC_INCLUDE("src/op.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
 
 local P = {}
 
@@ -24,7 +24,7 @@ P.blurb = "Uses one folder in your Dropbox. Nothing else is visible."
 P.linkStyle = "browser"         -- open a page, paste the code back
 P.needsClientId = true
 
-local UA = "gen1recomp-cloudsaves"
+local UA = "gen1recomp-savesync"
 local TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
 local RPC = "https://api.dropboxapi.com/2"
 local CONTENT = "https://content.dropboxapi.com/2"
@@ -142,7 +142,7 @@ end
 -- spend a round trip re-refreshing.
 local function refresh(ctx, cfg)
   if not (cfg.refresh and cfg.clientId) then
-    return false, "Dropbox sign-in expired -- set up cloud saves again"
+    return false, "Dropbox sign-in expired -- set up SaveSync again"
   end
   local res = ctx:http({
     method = "POST", url = TOKEN_URL,
@@ -157,7 +157,7 @@ local function refresh(ctx, cfg)
   if not res.ok then return false, res.err or "could not reach Dropbox" end
   local t = Json.decode(res.body or "") or {}
   if res.code ~= 200 or not t.access_token then
-    return false, "Dropbox sign-in expired -- set up cloud saves again"
+    return false, "Dropbox sign-in expired -- set up SaveSync again"
   end
   cfg.access = t.access_token
   cfg.expires = os.time() + (tonumber(t.expires_in) or 14000) - 60

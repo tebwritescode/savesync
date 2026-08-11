@@ -1,4 +1,4 @@
-# Self-hosted cloud saves
+# Self-hosted SaveSync
 
 The fallback that means this mod outlives any one company. One file of Node,
 no dependencies, no database — saves are small files in a folder.
@@ -12,24 +12,24 @@ keep playing after every free service in the world has changed its mind.
 ```sh
 cd server
 docker compose up -d
-docker compose logs cloudsaves
+docker compose logs savesync
 ```
 
 The log prints a setup code:
 
 ```
-Paste this into the game (Cloud Saves -> Set Up -> Use a setup code):
+Paste this into the game (SaveSync -> Set Up -> Use a setup code):
 
-  G1CS1.eyJwcm92aWRlciI6InNlcnZlciIsInVybCI6Imh0dHA6...
+  SSYNC1.eyJwcm92aWRlciI6InNlcnZlciIsInVybCI6Imh0dHA6...
 ```
 
-Copy it, then in the game: **Cloud Saves → Set Up → Use a setup code →
+Copy it, then in the game: **SaveSync → Set Up → Use a setup code →
 Paste from clipboard**. Repeat on every device. That is all.
 
 The code is also written to `/data/setup-code.txt` inside the container:
 
 ```sh
-docker compose exec cloudsaves cat /data/setup-code.txt
+docker compose exec savesync cat /data/setup-code.txt
 ```
 
 ### Set `PUBLIC_URL` first
@@ -53,12 +53,12 @@ unchanged, so re-pairing is quick.
 | variable | default | meaning |
 | --- | --- | --- |
 | `PUBLIC_URL` | `http://localhost:8787` | the address baked into the setup code |
-| `SERVER_NAME` | `My save server` | shown on the game's Cloud Saves screen |
+| `SERVER_NAME` | `My save server` | shown on the game's SaveSync screen |
 | `PORT` | `8787` | listen port inside the container |
 | `DATA_DIR` | `/data` | where saves live |
-| `CLOUDSAVE_TOKENS` | *(minted on first boot)* | comma-separated; one per person who should have **separate** storage |
+| `SAVESYNC_TOKENS` | *(minted on first boot)* | comma-separated; one per person who should have **separate** storage |
 
-Leave `CLOUDSAVE_TOKENS` unset and the server mints one on first boot and
+Leave `SAVESYNC_TOKENS` unset and the server mints one on first boot and
 saves it to `/data/tokens.json`.
 
 **A token is a password.** Anyone holding it can read and replace those
@@ -70,7 +70,7 @@ Give each person their own token — separate tokens mean completely separate
 storage:
 
 ```yaml
-CLOUDSAVE_TOKENS: "alice-long-random-string,bob-different-long-string"
+SAVESYNC_TOKENS: "alice-long-random-string,bob-different-long-string"
 ```
 
 Everyone who should share saves uses the same token.
@@ -108,7 +108,7 @@ a named volume for exactly this reason.
 Saves are plain files:
 
 ```sh
-docker compose exec cloudsaves tar -cf - -C /data stores | gzip > saves-backup.tar.gz
+docker compose exec savesync tar -cf - -C /data stores | gzip > saves-backup.tar.gz
 ```
 
 The game keeps its own local backups too, so this is a third line of defence,

@@ -13,7 +13,7 @@ package.path = "./mod/?.lua;" .. package.path
 
 local ROOT = "mod/"
 local cache = {}
-function CLOUD_SAVES_INCLUDE(path)
+function SAVESYNC_INCLUDE(path)
   if cache[path] then return cache[path] end
   local chunk = assert(loadfile(ROOT .. path))
   local v = chunk()
@@ -56,7 +56,7 @@ end
 
 -- --------------------------------------------------------------- json
 
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
 
 eq("json: object", Json.encode({ b = 1, a = "x" }), '{"a":"x","b":1}')
 eq("json: empty table is an object", Json.encode({}), "{}")
@@ -73,7 +73,7 @@ check("json: empty is nil", Json.decode("") == nil)
 
 -- --------------------------------------------------------------- util
 
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
 
 eq("base64: known vector", Util.b64("Man"), "TWFu")
 eq("base64: one pad", Util.b64("Ma"), "TWE=")
@@ -98,11 +98,11 @@ eq("ago: hours", Util.ago(os.time() - 7200), "2 hours ago")
 
 -- ------------------------------------------------------------ pairing
 
-local Pairing = CLOUD_SAVES_INCLUDE("src/pairing.lua")
+local Pairing = SAVESYNC_INCLUDE("src/pairing.lua")
 
 local code = Pairing.encode("server",
   { url = "https://saves.example.com", token = "sekrit", account = "Home" })
-check("pairing: has prefix", code:sub(1, 6) == "G1CS1.")
+check("pairing: has prefix", code:sub(1, 7) == "SSYNC1.")
 local decoded = assert(Pairing.decode(code))
 eq("pairing: provider", decoded.provider, "server")
 eq("pairing: url", decoded.url, "https://saves.example.com")
@@ -110,9 +110,9 @@ eq("pairing: token", decoded.token, "sekrit")
 
 check("pairing: survives whitespace", Pairing.decode(" " .. code .. "\n ") ~= nil)
 check("pairing: survives a uri wrapper",
-  Pairing.decode("gen1recomp://cloudsaves?c=" .. code) ~= nil)
+  Pairing.decode("gen1recomp://savesync?c=" .. code) ~= nil)
 check("pairing: rejects junk", Pairing.decode("hello") == nil)
-check("pairing: rejects a damaged code", Pairing.decode("G1CS1.!!!!") == nil)
+check("pairing: rejects a damaged code", Pairing.decode("SSYNC1.!!!!") == nil)
 
 -- A setup code must never be able to carry save data: it is built only from
 -- what the provider chooses to export.
@@ -124,7 +124,7 @@ eq("pairing: wrap is lossless", table.concat(lines), code)
 
 -- --------------------------------------------------- the decision table
 
-local Sync = CLOUD_SAVES_INCLUDE("src/sync.lua")
+local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local D = Sync.decide
 
 eq("decide: first upload",            D("a", nil, nil), "upload")

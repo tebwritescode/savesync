@@ -14,8 +14,8 @@
 -- storage: two devices holding the same token see the same saves, which is
 -- all "pair another device" has ever needed to mean.
 
-local Op = CLOUD_SAVES_INCLUDE("src/op.lua")
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
+local Op = SAVESYNC_INCLUDE("src/op.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
 
 local P = {}
 
@@ -25,7 +25,7 @@ P.blurb = "For advanced users running the Docker backend."
 P.linkStyle = "paste"           -- the UI asks for a setup code
 P.needsClientId = false
 
-local UA = "gen1recomp-cloudsaves"
+local UA = "gen1recomp-savesync"
 
 local function headers(cfg, extra)
   local h = {

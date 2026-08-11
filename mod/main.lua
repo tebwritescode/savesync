@@ -1,7 +1,7 @@
--- Cloud Saves for Gen1Recomp -- entry point.
+-- SaveSync for Gen1Recomp -- entry point.
 --
 -- Wires four things into the engine and nothing else:
---   * a CLOUD SAVES row on the title menu and the in-game Start menu
+--   * a SAVESYNC row on the title menu and the in-game Start menu
 --   * a per-frame pump for the sync engine (render.hud)
 --   * "the game just saved" -> upload, via the save.writing event
 --   * "a session is live" -> hold downloads back, via the state stack
@@ -16,23 +16,23 @@ local mod = ...
 -- mod:read + load(), cached as singletons -- the same idiom the other mods in
 -- this engine use.  Global, so submodules can pull their own dependencies.
 local _cache = {}
-function CLOUD_SAVES_INCLUDE(path)
+function SAVESYNC_INCLUDE(path)
   if _cache[path] then return _cache[path] end
   local src, err = mod:read(path)
   if not src then
-    error("cloud_saves: cannot read " .. path .. ": " .. tostring(err))
+    error("savesync: cannot read " .. path .. ": " .. tostring(err))
   end
-  local chunk = assert(load(src, "@cloud_saves/" .. path))
+  local chunk = assert(load(src, "@savesync/" .. path))
   local result = chunk()
   _cache[path] = result
   return result
 end
 
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
-local Sync = CLOUD_SAVES_INCLUDE("src/sync.lua")
-local Store = CLOUD_SAVES_INCLUDE("src/store.lua")
-local Http = CLOUD_SAVES_INCLUDE("src/http.lua")
-local installScreen = CLOUD_SAVES_INCLUDE("src/ui.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
+local Sync = SAVESYNC_INCLUDE("src/sync.lua")
+local Store = SAVESYNC_INCLUDE("src/store.lua")
+local Http = SAVESYNC_INCLUDE("src/http.lua")
+local installScreen = SAVESYNC_INCLUDE("src/ui.lua")
 
 -- OAuth client ids.  These are PUBLIC values (the device flow and PKCE exist
 -- precisely so a client needs no secret), they differ per distribution, and a
@@ -50,9 +50,9 @@ do
   end
   -- Overridable for development, so a contributor can test a sign-in flow
   -- against their own OAuth app without editing a tracked file.
-  local envGithub = os.getenv("GEN1RECOMP_CLOUD_GITHUB_CLIENT_ID")
+  local envGithub = os.getenv("SAVESYNC_GITHUB_CLIENT_ID")
   if envGithub and envGithub ~= "" then clientIds.github = envGithub end
-  local envDropbox = os.getenv("GEN1RECOMP_CLOUD_DROPBOX_APP_KEY")
+  local envDropbox = os.getenv("SAVESYNC_DROPBOX_APP_KEY")
   if envDropbox and envDropbox ~= "" then clientIds.dropbox = envDropbox end
 end
 
@@ -84,7 +84,7 @@ mod.hooks:wrap("render.hud", function(next, game, viewport)
 end)
 
 local function openScreen(game)
-  mod.ui.push(game, "CloudSaves")
+  mod.ui.push(game, "SaveSync")
 end
 
 -- Title menu: the one place a download can actually be applied, so the row
@@ -92,17 +92,21 @@ end
 mod.hooks:wrap("ui.title_menu.items", function(next, game, items)
   pcall(function()
     items[#items + 1] = {
-      label = "CLOUD SAVES",
+      label = "SAVESYNC",
       onSelect = function() openScreen(game) end,
     }
   end)
   return next(game, items)
 end)
 
+-- Start menu: "SYNC", not "SAVESYNC".  The vanilla Start menu box is sized
+-- for POKeMON / ITEM / SAVE / OPTION, and an eight-character row is wider
+-- than any of them; the short form also reads as the sibling of SAVE, which
+-- is exactly what it is.
 mod.hooks:wrap("ui.start_menu.items", function(next, game, items)
   pcall(function()
     mod.ui.insertBefore(items, "OPTION", {
-      label = "CLOUD",
+      label = "SYNC",
       onSelect = function() openScreen(game) end,
     })
   end)

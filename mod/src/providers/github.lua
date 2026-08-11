@@ -16,9 +16,9 @@
 -- again on a second machine finds the SAME gist by its description marker,
 -- so "pair another device" is just "sign in again" -- no code to copy at all.
 
-local Op = CLOUD_SAVES_INCLUDE("src/op.lua")
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
+local Op = SAVESYNC_INCLUDE("src/op.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
 
 local P = {}
 
@@ -31,10 +31,10 @@ P.needsClientId = true
 -- Every gist this mod owns carries this exact description.  It is how a
 -- second device finds the storage the first one created, and how the mod
 -- avoids ever touching a gist the player made themselves.
-local MARKER = "gen1recomp cloud saves (do not rename)"
+local MARKER = "gen1recomp SaveSync (do not rename)"
 
 local API = "https://api.github.com"
-local UA = "gen1recomp-cloudsaves"
+local UA = "gen1recomp-savesync"
 
 local function apiHeaders(token)
   return {
@@ -197,10 +197,10 @@ local function fetchGist(ctx, cfg)
   })
   if not res.ok then return nil, res.err or "no connection" end
   if res.code == 404 then
-    return nil, "the storage gist is gone -- set up cloud saves again"
+    return nil, "the storage gist is gone -- set up SaveSync again"
   end
   if res.code == 401 then
-    return nil, "GitHub sign-in expired -- set up cloud saves again"
+    return nil, "GitHub sign-in expired -- set up SaveSync again"
   end
   if res.code ~= 200 then
     return nil, "GitHub said HTTP " .. tostring(res.code)
@@ -282,7 +282,7 @@ function P.write(cfg, files)
     })
     if not res.ok then return ctx:fail(res.err or "no connection") end
     if res.code == 401 then
-      return ctx:fail("GitHub sign-in expired -- set up cloud saves again")
+      return ctx:fail("GitHub sign-in expired -- set up SaveSync again")
     end
     if res.code ~= 200 then
       return ctx:fail("GitHub said HTTP " .. tostring(res.code))

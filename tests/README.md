@@ -12,10 +12,10 @@ The fourth runs inside a Gen1Recomp checkout, because it loads the mod
 through the engine's own mod SDK:
 
 ```sh
-cp -r mod       /path/to/gen1recomp/mods/cloud_saves
-cp tests/mod_load.test.lua /path/to/gen1recomp/tests/cloudsaves_load_test.lua
+cp -r mod       /path/to/gen1recomp/mods/savesync
+cp tests/mod_load.test.lua /path/to/gen1recomp/tests/savesync_load_test.lua
 cd /path/to/gen1recomp
-luajit tests/cloudsaves_load_test.lua
+luajit tests/savesync_load_test.lua
 ```
 
 ## What each one is for

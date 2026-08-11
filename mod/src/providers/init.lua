@@ -21,10 +21,10 @@
 local Registry = {}
 
 local LIST = {
-  CLOUD_SAVES_INCLUDE("src/providers/github.lua"),
-  CLOUD_SAVES_INCLUDE("src/providers/dropbox.lua"),
-  CLOUD_SAVES_INCLUDE("src/providers/server.lua"),
-  CLOUD_SAVES_INCLUDE("src/providers/gdrive.lua"),
+  SAVESYNC_INCLUDE("src/providers/github.lua"),
+  SAVESYNC_INCLUDE("src/providers/dropbox.lua"),
+  SAVESYNC_INCLUDE("src/providers/server.lua"),
+  SAVESYNC_INCLUDE("src/providers/gdrive.lua"),
 }
 
 local byId = {}

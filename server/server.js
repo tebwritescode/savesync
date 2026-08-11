@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// Gen1Recomp cloud saves -- self-hosted backend.
+// Gen1Recomp SaveSync -- self-hosted backend.
 //
 // Node standard library only: no npm install, no lockfile, no supply chain.
 // The whole protocol is four endpoints over a folder of small files, which is
@@ -45,10 +45,10 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const TOKENS_FILE = path.join(DATA_DIR, 'tokens.json');
 
 function loadTokens() {
-  // Explicit tokens win: an operator who sets CLOUDSAVE_TOKENS is managing
+  // Explicit tokens win: an operator who sets SAVESYNC_TOKENS is managing
   // them somewhere else (a compose file, a secrets store) and the server
   // should not quietly mint extras alongside.
-  const fromEnv = (process.env.CLOUDSAVE_TOKENS || '')
+  const fromEnv = (process.env.SAVESYNC_TOKENS || '')
     .split(',').map((s) => s.trim()).filter(Boolean);
   if (fromEnv.length) return fromEnv;
 
@@ -143,7 +143,7 @@ const server = http.createServer(async (req, res) => {
   const route = url.pathname;
 
   if (route === '/' || route === '/health') {
-    return send(res, 200, { ok: true, service: 'gen1recomp-cloudsaves' });
+    return send(res, 200, { ok: true, service: 'gen1recomp-savesync' });
   }
   if (!route.startsWith('/v1/')) return send(res, 404, { error: 'not found' });
 
@@ -230,7 +230,7 @@ const server = http.createServer(async (req, res) => {
 function setupCode(token) {
   const payload = JSON.stringify({ provider: 'server', url: PUBLIC_URL, token,
     account: SERVER_NAME });
-  return 'G1CS1.' + Buffer.from(payload, 'utf8').toString('base64url');
+  return 'SSYNC1.' + Buffer.from(payload, 'utf8').toString('base64url');
 }
 
 server.listen(PORT, () => {
@@ -239,10 +239,10 @@ server.listen(PORT, () => {
   try {
     fs.writeFileSync(path.join(DATA_DIR, 'setup-code.txt'), code + '\n');
   } catch (_) { /* read-only /data is the operator's problem, not fatal */ }
-  console.log(`gen1recomp cloud saves listening on :${PORT}`);
+  console.log(`gen1recomp SaveSync listening on :${PORT}`);
   console.log(`public url: ${PUBLIC_URL}`);
   console.log('');
-  console.log('Paste this into the game (Cloud Saves -> Set Up -> Use a setup code):');
+  console.log('Paste this into the game (SaveSync -> Set Up -> Use a setup code):');
   console.log('');
   console.log('  ' + code);
   console.log('');

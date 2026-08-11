@@ -17,7 +17,7 @@
 --
 -- A body that throws becomes a clean error, never a crashed frame.
 
-local Http = CLOUD_SAVES_INCLUDE("src/http.lua")
+local Http = SAVESYNC_INCLUDE("src/http.lua")
 
 local Op = {}
 Op.__index = Op

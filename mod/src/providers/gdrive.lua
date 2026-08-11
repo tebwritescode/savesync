@@ -26,7 +26,7 @@
 --      and the uploadType=media endpoint.  Names are not unique in Drive, so
 --      keep a name -> fileId map in the config and reconcile it from list().
 
-local Op = CLOUD_SAVES_INCLUDE("src/op.lua")
+local Op = SAVESYNC_INCLUDE("src/op.lua")
 
 local P = {}
 

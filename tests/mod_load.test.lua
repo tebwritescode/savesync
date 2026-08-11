@@ -4,9 +4,9 @@
 --
 -- Run from a Gen1Recomp checkout with the mod installed:
 --
---   cp -r mod /path/to/gen1recomp/mods/cloud_saves
+--   cp -r mod /path/to/gen1recomp/mods/savesync
 --   cd /path/to/gen1recomp
---   luajit tests/../../gen1recomp-cloudsaves/tests/mod_load.test.lua
+--   luajit tests/../../gen1recomp-savesync/tests/mod_load.test.lua
 --
 -- or, more simply, copy this file into the engine's tests/ and run it there.
 -- It needs no ROM: the harness supplies fixture data.
@@ -14,7 +14,7 @@
 local T = require("tests.modkit")
 
 local Data = T.fixtures.load()
-local r = T.sdk.loadMod("mods/cloud_saves", { data = Data })
+local r = T.sdk.loadMod("mods/savesync", { data = Data })
 
 T.check(r ~= nil, "loadMod returned a result")
 
@@ -24,11 +24,11 @@ end
 T.check(#(r.errors or {}) == 0, "mod loads with no errors")
 
 T.check(r.mod ~= nil, "the loader kept a mod handle")
-T.eq(r.mod and r.mod.manifest.id, "cloud_saves", "loaded under the right id")
+T.eq(r.mod and r.mod.manifest.id, "savesync", "loaded under the right id")
 
 -- Exports are the documented way for another mod (or a test) to reach in;
 -- the loader collects them per id rather than on the mod handle.
-local exports = r.loader and r.loader.exports["cloud_saves"]
+local exports = r.loader and r.loader.exports["savesync"]
 T.check(type(exports) == "table", "mod publishes its exports")
 if type(exports) == "table" then
   T.check(type(exports.sync) == "table", "exports the sync engine")
@@ -65,17 +65,17 @@ local function hasLabel(items, label)
   return false
 end
 
-T.check(hasLabel(rowsFrom("ui.title_menu.items"), "CLOUD SAVES"),
+T.check(hasLabel(rowsFrom("ui.title_menu.items"), "SAVESYNC"),
   "adds a title-menu row")
 
 -- The Start-menu row anchors before OPTION, so seed the vanilla anchor.
 local startRows = rowsFrom("ui.start_menu.items",
   { { label = "POKEMON" }, { label = "OPTION" }, { label = "EXIT" } })
-T.check(hasLabel(startRows, "CLOUD"), "adds a Start-menu row")
+T.check(hasLabel(startRows, "SYNC"), "adds a Start-menu row")
 T.eq(#startRows, 4, "and adds exactly one row")
 
-T.check(type(Data.screens) == "table" and Data.screens.CloudSaves ~= nil,
-  "registers the CloudSaves screen")
+T.check(type(Data.screens) == "table" and Data.screens.SaveSync ~= nil,
+  "registers the SaveSync screen")
 
 -- ---- the screen actually constructs and runs.
 -- Registry entries only prove the table is there; a typo inside new() or
@@ -87,7 +87,7 @@ do
     input = { wasPressed = function(_, k) return pressed[k] == true end },
     stack = { states = {}, pop = function(s) table.remove(s.states) end },
   }
-  local ok, screen = pcall(Data.screens.CloudSaves.new, game)
+  local ok, screen = pcall(Data.screens.SaveSync.new, game)
   T.check(ok and type(screen) == "table", "the screen constructs: "
     .. tostring(screen))
   if ok and screen then
@@ -105,4 +105,4 @@ do
 end
 
 r.release()
-T.finish("cloud_saves load")
+T.finish("savesync load")

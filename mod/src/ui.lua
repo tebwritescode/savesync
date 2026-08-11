@@ -1,9 +1,9 @@
--- The Cloud Saves screen.
+-- The SaveSync screen.
 --
 -- The whole design brief for this file is the four lines the player should
 -- ever have to read:
 --
---     CLOUD SAVES
+--     SAVESYNC
 --     Connected
 --     Last synced: just now
 --     Sync Now / Pair Another Device / Restore Previous Save
@@ -17,16 +17,16 @@
 -- "_" or check-mark tile, so the cursor is the vanilla filled arrow
 -- (Theme.cursor) and the "connected" tick is drawn as three rectangles.
 
-local Sync = CLOUD_SAVES_INCLUDE("src/sync.lua")
-local Store = CLOUD_SAVES_INCLUDE("src/store.lua")
-local Pairing = CLOUD_SAVES_INCLUDE("src/pairing.lua")
-local Providers = CLOUD_SAVES_INCLUDE("src/providers/init.lua")
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
+local Sync = SAVESYNC_INCLUDE("src/sync.lua")
+local Store = SAVESYNC_INCLUDE("src/store.lua")
+local Pairing = SAVESYNC_INCLUDE("src/pairing.lua")
+local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
 
 local VISIBLE = 7            -- menu rows that fit between title and footer
 
 return function(mod, cfgOpts)
-  mod.content.screens:register("CloudSaves", {
+  mod.content.screens:register("SaveSync", {
     new = function(game)
       local Font = mod.ui.Font
       local Theme = mod.ui.Theme
@@ -70,10 +70,10 @@ return function(mod, cfgOpts)
       end
 
       -- Some devices have no clipboard at all.  A plain text file beside the
-      -- save is the escape hatch: put the code in cloud_saves/setup-code.txt
+      -- save is the escape hatch: put the code in savesync/setup-code.txt
       -- and the game reads it.  It costs three lines and it means nobody is
       -- ever stranded by a platform without a clipboard.
-      local CODE_FILE = "cloud_saves/setup-code.txt"
+      local CODE_FILE = "savesync/setup-code.txt"
       local function codeFromFile()
         if not (love and love.filesystem and love.filesystem.getInfo(CODE_FILE)) then
           return nil
@@ -489,7 +489,7 @@ return function(mod, cfgOpts)
 
       function self:draw()
         Font.drawBox(0, 0, 20, 18)
-        Font.draw("CLOUD SAVES", 16, 8)
+        Font.draw("SAVESYNC", 16, 8)
 
         local y = 22
         if Sync.configured() and Sync.state ~= "conflict" then

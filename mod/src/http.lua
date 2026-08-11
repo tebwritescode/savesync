@@ -24,9 +24,9 @@
 
 local Http = {}
 
-local CMD    = "g1cs_http_cmd"
-local RESULT = "g1cs_http_result"
-local QUIT   = "g1cs_http_quit"
+local CMD    = "savesync_http_cmd"
+local RESULT = "savesync_http_result"
+local QUIT   = "savesync_http_quit"
 
 -- Two workers.  Sync is one request at a time in the common case; the second
 -- exists so a slow upload cannot stall the manifest read that the UI is
@@ -51,9 +51,9 @@ require("love.thread")
 require("love.filesystem")
 require("love.system")
 
-local cmdCh = love.thread.getChannel("g1cs_http_cmd")
-local resCh = love.thread.getChannel("g1cs_http_result")
-local quitCh = love.thread.getChannel("g1cs_http_quit")
+local cmdCh = love.thread.getChannel("savesync_http_cmd")
+local resCh = love.thread.getChannel("savesync_http_result")
+local quitCh = love.thread.getChannel("savesync_http_quit")
 
 local function loadModule(path)
   local ok, chunk = pcall(love.filesystem.load, path)
@@ -69,7 +69,7 @@ local saveDir = love.filesystem.getSaveDirectory()
 -- curl expands the escape itself, so the format string carries the two
 -- characters backslash-n rather than a real newline (the same reason
 -- HostShell writes its own marker that way).
-local MARK = "G1CS-HTTP-STATUS:"
+local MARK = "SAVESYNC-STATUS:"
 local MARK_FMT = "\\n" .. MARK .. "%{http_code}"
 
 local function post(t) resCh:push(t) end
@@ -107,8 +107,8 @@ local function doRequest(job)
   if job.body and #job.body > 0 then
     -- Bodies go through a file, never the command line: a save blob is tens
     -- of kilobytes of arbitrary bytes and no shell quoting survives that.
-    love.filesystem.createDirectory("cloud_saves/tmp")
-    bodyPath = "cloud_saves/tmp/req-" .. tostring(job.id) .. ".bin"
+    love.filesystem.createDirectory("savesync/tmp")
+    bodyPath = "savesync/tmp/req-" .. tostring(job.id) .. ".bin"
     local okW = love.filesystem.write(bodyPath, job.body)
     if not okW then
       post({ id = job.id, ok = false, err = "could not stage request body" })
@@ -130,7 +130,7 @@ local function doRequest(job)
       return
     end
     post({ id = job.id, ok = false,
-      err = "this device has no curl, so cloud saves cannot upload here" })
+      err = "this device has no curl, so SaveSync cannot upload here" })
     return
   end
 
@@ -286,7 +286,7 @@ function Http.request(req)
     needsHeaders = needsHeaders,
     body = req.body,
     timeout = req.timeout,
-    userAgent = req.userAgent or "gen1recomp-cloudsaves",
+    userAgent = req.userAgent or "gen1recomp-savesync",
     accept = req.accept,
   })
   return id

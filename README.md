@@ -1,10 +1,10 @@
-# Cloud Saves for Gen1Recomp
+# SaveSync for Gen1Recomp
 
 Automatic cross-device saves for [Gen1Recomp](https://github.com/bryanthaboi/gen1recomp),
 using **free storage that belongs to the player**, not to the mod author.
 
 ```
-CLOUD SAVES
+SAVESYNC
 Connected  ✓
 Last synced: just now
 
@@ -21,13 +21,13 @@ accounts to create, no subscriptions, no server for the mod author to run.
 
 ## For players: setting it up
 
-**Cloud Saves → Set Up → GitHub → type the code it shows you → done.**
+**SaveSync → Set Up → GitHub → type the code it shows you → done.**
 
 That is the whole thing. The game shows an eight-character code and a web
 address; you type the code on any device with a browser (your phone is fine),
 and the game finishes on its own.
 
-**On your second device: Cloud Saves → Set Up → GitHub → sign in again.** It
+**On your second device: SaveSync → Set Up → GitHub → sign in again.** It
 finds the same storage automatically. There is no code to copy between
 devices unless you want one.
 
@@ -72,7 +72,7 @@ Pick one at Set Up. The mod does not care which, and can change later.
 | provider | what you need | notes |
 | --- | --- | --- |
 | **GitHub** *(recommended)* | a GitHub account | A secret gist in your own account. Free, no size limits at this scale, versioned by git. Only the `gist` permission is requested — the mod cannot see your repositories. |
-| **Dropbox** | a Dropbox account | One folder (`Apps/Gen1Recomp Cloud Saves`) inside your Dropbox. The mod cannot see anything else in it. |
+| **Dropbox** | a Dropbox account | One folder (`Apps/Gen1Recomp SaveSync`) inside your Dropbox. The mod cannot see anything else in it. |
 | **My own server** | Docker | The tiny backend in [`server/`](server/). One `docker compose up`, paste the code it prints. |
 | Google Drive | — | Not shipping yet, and [`mod/src/providers/gdrive.lua`](mod/src/providers/gdrive.lua) explains exactly why. |
 
@@ -84,29 +84,33 @@ against a four-function interface — no part of the sync engine changes. See
 
 ## Installing the mod
 
-Copy [`mod/`](mod/) into your Gen1Recomp `mods/` folder as `cloud_saves`, and
+Copy [`mod/`](mod/) into your Gen1Recomp `mods/` folder as `savesync`, and
 enable it in the mods manager:
 
 ```sh
-cp -r mod /path/to/gen1recomp/mods/cloud_saves
+cp -r mod /path/to/gen1recomp/mods/savesync
 ```
 
 Requires Gen1Recomp mod API 2. Desktop (Windows, macOS, Linux) needs `curl`,
 which all three ship. Android without `curl` degrades to read-only rather
 than failing.
 
-### Before you distribute a build
+### Client ids, if you fork this
 
 Sign-in needs one **public** OAuth client id per provider, which a
 distribution registers once and everybody's copy shares. They are not
 secrets — the GitHub device flow and Dropbox PKCE exist precisely so a
 desktop app needs no client secret — but they are per-distribution, so a fork
-should register its own rather than borrow anyone else's.
+should register its own rather than borrow this one.
 
-Fill them into [`mod/providers.json`](mod/providers.json). The walkthrough is
-in [docs/providers.md](docs/providers.md) and takes about two minutes each.
+| provider | state in [`mod/providers.json`](mod/providers.json) |
+| --- | --- |
+| GitHub | **set** — device flow verified against GitHub |
+| Dropbox | empty; picking Dropbox says "not configured" until an app key is added |
+| self-hosted | needs no client id, works on a fresh checkout |
 
-The self-hosted option needs no client id and works on a fresh checkout.
+The registration walkthrough for both is in
+[docs/providers.md](docs/providers.md) and takes about two minutes each.
 
 ---
 
@@ -115,10 +119,10 @@ The self-hosted option needs no client id and works on a fresh checkout.
 ```sh
 cd server
 docker compose up -d
-docker compose logs cloudsaves      # your setup code is printed here
+docker compose logs savesync      # your setup code is printed here
 ```
 
-Paste that code into **Cloud Saves → Set Up → Use a setup code** on every
+Paste that code into **SaveSync → Set Up → Use a setup code** on every
 device. Full guide, including free places to run it: [server/README.md](server/README.md).
 
 ---

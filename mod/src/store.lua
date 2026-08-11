@@ -12,11 +12,11 @@
 --    construction: sync only ever reads the game's save slots.
 --
 -- 2. Nothing is replaced without a local backup first.  Every path that
---    overwrites a save writes the outgoing bytes to cloud_saves/backups/
+--    overwrites a save writes the outgoing bytes to savesync/backups/
 --    first, and the UI's Restore Previous Save reads exactly that folder.
 --    A cloud round trip can be wrong; a lost playthrough cannot be undone.
 
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
 
 -- These three private requires are why the manifest declares
 -- `engine_internals`.  There is no mod-API surface for "read the active save
@@ -31,8 +31,8 @@ local GameVersion = require("src.core.GameVersion")
 
 local Store = {}
 
-local CONFIG_PATH = "cloud_saves/config.lua"
-local BACKUP_DIR = "cloud_saves/backups"
+local CONFIG_PATH = "savesync/config.lua"
+local BACKUP_DIR = "savesync/backups"
 
 -- Ten is a lot of history for a file that changes when the player walks into
 -- a Poké Center, and it is small: ten copies of a Gen 1 save is under half a
@@ -89,7 +89,7 @@ function Store.saveConfig(cfg)
   cache = cfg
   local f = fs()
   if not f then return false end
-  f.createDirectory("cloud_saves")
+  f.createDirectory("savesync")
   local ok, encoded = pcall(SaveSerializer.encode, cfg)
   if not ok then return false, "could not encode config" end
   -- Same staged-write discipline the engine uses for save.lua: a power cut

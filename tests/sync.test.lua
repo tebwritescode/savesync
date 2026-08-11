@@ -148,7 +148,7 @@ end
 -- activate, so each device binds to its own stubs.
 local function activate(dev)
   _G.love = dev.love
-  _G.CLOUD_SAVES_INCLUDE = dev.include
+  _G.SAVESYNC_INCLUDE = dev.include
   package.loaded["src.core.SaveData"] = dev.saveData
   package.loaded["src.core.SaveSerializer"] = dev.serializer
   package.loaded["src.core.GameVersion"] = dev.gameVersion

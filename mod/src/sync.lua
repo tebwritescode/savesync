@@ -25,11 +25,11 @@
 -- which reads the engine's save slots and nothing else.  ROM data, the ROM
 -- cache, assets and this mod's own config are not reachable from here.
 
-local Op = CLOUD_SAVES_INCLUDE("src/op.lua")
-local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
-local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
-local Store = CLOUD_SAVES_INCLUDE("src/store.lua")
-local Providers = CLOUD_SAVES_INCLUDE("src/providers/init.lua")
+local Op = SAVESYNC_INCLUDE("src/op.lua")
+local Json = SAVESYNC_INCLUDE("src/json.lua")
+local Util = SAVESYNC_INCLUDE("src/util.lua")
+local Store = SAVESYNC_INCLUDE("src/store.lua")
+local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
 
 local Sync = {}
 
@@ -177,7 +177,7 @@ function Sync.cycle(opts)
   opts = opts or {}
   local provider = Sync.provider()
   local conf = Store.config()
-  if not provider then return Op.failed("cloud saves are not set up yet") end
+  if not provider then return Op.failed("SaveSync is not set up yet") end
 
   return Op.new(function(ctx)
     local names = ctx:await(provider.list(conf.cfg))
@@ -326,7 +326,7 @@ function Sync.resolveKeepLocal(key)
 end
 
 --- Take the cloud's version.  The displaced local save is written to
---- cloud_saves/backups first by Store.apply, so Restore Previous Save can
+--- savesync/backups first by Store.apply, so Restore Previous Save can
 --- put it back.
 function Sync.resolveUseCloud(key)
   local con = Sync.conflicts[key]
@@ -357,7 +357,7 @@ end
 --- List the versions of a save the cloud is holding, newest first.
 function Sync.history(key)
   local provider, conf = Sync.provider(), Store.config()
-  if not provider then return Op.failed("cloud saves are not set up yet") end
+  if not provider then return Op.failed("SaveSync is not set up yet") end
   return Op.new(function(ctx)
     local names = ctx:await(provider.list(conf.cfg))
     local out = {}
@@ -373,7 +373,7 @@ end
 --- Pull one history entry down over the live save (backing the live one up).
 function Sync.restoreHistory(key, name)
   local provider, conf = Sync.provider(), Store.config()
-  if not provider then return Op.failed("cloud saves are not set up yet") end
+  if not provider then return Op.failed("SaveSync is not set up yet") end
   return Op.new(function(ctx)
     local blobs = ctx:await(provider.read(conf.cfg, { name }))
     local bytes = blobs[name]

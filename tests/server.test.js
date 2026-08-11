@@ -55,13 +55,13 @@ async function waitForServer(deadlineMs = 10000) {
 }
 
 (async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'g1cs-test-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'savesync-test-'));
   const child = spawn(process.execPath,
     [path.join(__dirname, '..', 'server', 'server.js')], {
       env: Object.assign({}, process.env, {
         PORT: String(PORT),
         DATA_DIR: dataDir,
-        CLOUDSAVE_TOKENS: TOKEN,
+        SAVESYNC_TOKENS: TOKEN,
         PUBLIC_URL: BASE,
         SERVER_NAME: 'Test server',
       }),
@@ -170,12 +170,12 @@ async function waitForServer(deadlineMs = 10000) {
       (await req('GET', '/v1/files', { token: 'nope' })).status, 401);
 
     // ---- the setup code the operator is told to paste
-    check('setup code was printed', serverOut.includes('G1CS1.'), serverOut);
+    check('setup code was printed', serverOut.includes('SSYNC1.'), serverOut);
     const codeFile = path.join(dataDir, 'setup-code.txt');
     check('setup code was written to /data', fs.existsSync(codeFile));
     const code = fs.readFileSync(codeFile, 'utf8').trim();
     const payload = JSON.parse(
-      Buffer.from(code.slice('G1CS1.'.length), 'base64url').toString('utf8'));
+      Buffer.from(code.slice('SSYNC1.'.length), 'base64url').toString('utf8'));
     eq('setup code names this provider', payload.provider, 'server');
     eq('setup code carries the url', payload.url, BASE);
     eq('setup code carries the token', payload.token, TOKEN);

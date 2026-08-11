@@ -55,7 +55,7 @@ with the wrong name on it.
 
 1. <https://github.com/settings/developers> → **OAuth Apps** → **New OAuth App**
 2. Application name: whatever the player should see on the consent screen
-   (e.g. `Gen1Recomp Cloud Saves`).
+   (e.g. `Gen1Recomp SaveSync`).
 3. Homepage URL: your project page. Authorization callback URL: anything —
    the device flow never uses it, but the form requires a value.
 4. Register, then on the app's page tick **Enable Device Flow**. *(Without
@@ -67,7 +67,7 @@ There is no client secret to copy and no verification to wait for.
 The mod requests the `gist` scope and nothing else — it can create and read
 gists, and cannot see repositories, code, or anything else in the account.
 Saves live in one **secret** gist described exactly
-`gen1recomp cloud saves (do not rename)`, which is how a second device finds
+`gen1recomp SaveSync (do not rename)`, which is how a second device finds
 the same storage after signing in.
 
 ### Dropbox — about two minutes
@@ -89,8 +89,8 @@ equivalent cap, which is part of why it is the recommended default.
 ### Testing without editing a tracked file
 
 ```sh
-export GEN1RECOMP_CLOUD_GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
-export GEN1RECOMP_CLOUD_DROPBOX_APP_KEY=xxxxxxxxxxxxxxx
+export SAVESYNC_GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
+export SAVESYNC_DROPBOX_APP_KEY=xxxxxxxxxxxxxxx
 ```
 
 Both override `providers.json` at load.
