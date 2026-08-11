@@ -1,206 +1,109 @@
-# SaveSync for Gen1Recomp
+# SaveSync
 
-Automatic cross-device saves for [Gen1Recomp](https://github.com/bryanthaboi/gen1recomp),
-using **free storage that belongs to the player**, not to the mod author.
+**Automatic cross-device saves for [Gen1Recomp](https://github.com/bryanthaboi/gen1recomp)
+— your save follows you to every device you play on, stored on free space that
+belongs to you.**
 
-```
-SAVESYNC
-Connected  ✓
-Last synced: just now
+Play on the desktop, close it, open the game on the laptop, press CONTINUE.
+Your save is there. Sign in once and it looks after itself.
 
-  Sync Now
-  Pair Another Device
-  Restore Previous Save
-```
+> Your saves live in your own storage, under your own account, and you can take
+> them with you whenever you like.
 
-Play on the desktop, close it, open the game on the laptop, press CONTINUE —
-your save is there. Nobody hosts anything for anyone else, there are no
-accounts to create, no subscriptions, no server for the mod author to run.
+## The storage is yours
 
----
+Pick one at setup. Each is free, and each keeps SaveSync to a single corner of
+your account.
 
-## For players: setting it up
+| | where your saves live |
+|---|---|
+| **GitHub** | one secret gist, reached with the `gist` permission alone |
+| **Dropbox** | one app folder of its own |
+| **Your own server** | the Docker container in `server/`, on hardware you run |
 
-**SaveSync → Set Up → GitHub → type the code it shows you → done.**
+Sign in on a second device and it finds the same storage by itself — your save
+is waiting there.
 
-That is the whole thing. The game shows an eight-character code and a web
-address; you type the code on any device with a browser (your phone is fine),
-and the game finishes on its own.
+## Your progress is protected
 
-**On your second device: SaveSync → Set Up → GitHub → sign in again.** It
-finds the same storage automatically. There is no code to copy between
-devices unless you want one.
+This is the part that matters most, so it is the part with the most care in it.
 
-After that it looks after itself:
+- **If two devices changed the same save, it stops and asks you**, showing both
+  — *"here: 3 badges"* against *"cloud (Laptop): 5 badges"* — so the choice is
+  always yours.
+- **Whichever you pick, the other survives.** Ten past versions live on the
+  device and ten in the cloud, and every replacement keeps the outgoing save
+  first.
+- **CONTINUE speaks up** when it could not reach your cloud, tells you when you
+  last synced, and lets you play anyway. Offline is a normal way to play.
+- **Save files only.** The upload set comes from reading your save slots, so
+  your saves are exactly what travels.
 
-| when | what happens |
-| --- | --- |
-| you save in-game | uploaded a few seconds later |
-| you start the game | checks for a newer save and pulls it down |
-| you have no internet | keeps playing normally, retries later |
-| two devices changed the same save | **stops and asks you** — see below |
+## Snapshots, and why they are on
 
-### Auto save
+Every five minutes SaveSync quietly takes a **snapshot** — a copy of where you
+are, kept beside your save. A crash costs you minutes instead of an evening,
+and your save file stays exactly as you left it, so soft-resetting to re-roll a
+starter or a legendary works the way it always has.
 
-**SaveSync → Auto save → 3 / 5 / 10 / 15 min.** The game saves itself on a
-timer, so a crash or a closed lid costs minutes instead of hours. It syncs
-like any other save.
+There is also a plain auto-save that writes the real save file on a timer.
+That one ships off, and is yours to switch on if you want it.
 
-It ships **OFF**, deliberately. In Gen 1, saving is part of how people play —
-soft-resetting to re-roll a starter or a legendary catch works *because* the
-game only writes when you tell it to, and an autosave landing between the
-encounter and the reset would quietly destroy that. So it is yours to turn
-on, and every autosave takes a backup first: an autosave at the wrong moment
-is undoable from **Restore Previous Save**, tagged `auto`.
+## Install
 
-It only ever writes when you are **settled in the overworld** — never in a
-battle, a menu, a shop, a cutscene, a warp, or mid-step between two tiles. A
-save that comes due at a bad moment is not skipped, just held until you walk
-out. You get a brief `SAVED` in the corner when it happens.
+1. Have Gen1Recomp set up with your own legally-obtained ROM.
+2. Download the latest `savesync-<version>.zip` from Releases.
+3. Launcher → MODS → **Import mod .zip**, then enable **SaveSync**.
+4. Title screen → **SAVESYNC** → Set Up → GitHub, and type the code it shows
+   you on any device with a browser. That is the whole setup.
 
-### It will not eat your progress
+On your other devices, repeat step 4 and sign in again. It finds your saves.
 
-This is the part the mod takes seriously.
+It asks for `network` to reach your storage, `filesystem` for its own backups,
+and `engine_internals` to read and replace save slots through the engine's own
+code — so the rules about where your progress lives stay in one place.
 
-* Every version of every save is kept — ten on the device, ten in the cloud.
-* Nothing is ever replaced without the outgoing save being backed up first.
-* If two devices changed the same save while apart, sync **stops**. It shows
-  you both — "this device: 3 badges, 4:12" / "cloud (Laptop): 5 badges, 6:40"
-  — and waits. Whichever you pick, the other one is still recoverable from
-  **Restore Previous Save**.
-* A save is never chosen by clock time. Clocks are wrong, and picking the
-  "newer" one is how naive sync loses playthroughs.
+## Status
 
-### What gets uploaded
+| | |
+|---|---|
+| GitHub, Dropbox and self-hosted storage | ✅ |
+| Every save slot syncs, not just the selected one | ✅ |
+| Conflict detection that stops and asks | ✅ |
+| Ten local backups and ten cloud versions per save | ✅ |
+| Snapshots every 5 min, restorable, save file left alone | ✅ |
+| Stale-save warning on CONTINUE | ✅ |
+| Works offline and retries later | ✅ |
+| Google Drive | 🔜 |
 
-Save files. That is the entire list — the same `save.lua` the game already
-writes, a small manifest next to it, and previous versions of it. A save is
-about 32 KB.
+## Running your own server
 
-**ROMs and game content are never uploaded.** The upload set is built by
-reading the engine's save slots, so there is no path by which anything else
-could be included.
-
----
-
-## Where the saves actually live
-
-Pick one at Set Up. The mod does not care which, and can change later.
-
-| provider | what you need | notes |
-| --- | --- | --- |
-| **GitHub** *(recommended)* | a GitHub account | A secret gist in your own account. Free, no size limits at this scale, versioned by git. Only the `gist` permission is requested — the mod cannot see your repositories. |
-| **Dropbox** | a Dropbox account | One folder (`Apps/Gen1Recomp SaveSync`) inside your Dropbox. The mod cannot see anything else in it. |
-| **My own server** | Docker | The tiny backend in [`server/`](server/). One `docker compose up`, paste the code it prints. |
-| Google Drive | — | Not shipping yet, and [`mod/src/providers/gdrive.lua`](mod/src/providers/gdrive.lua) explains exactly why. |
-
-If today's free provider ever disappears, adding a new one is one file
-against a four-function interface — no part of the sync engine changes. See
-[docs/providers.md](docs/providers.md).
-
----
-
-## Installing the mod
-
-Copy [`mod/`](mod/) into your Gen1Recomp `mods/` folder as `savesync`, and
-enable it in the mods manager:
-
-```sh
-cp -r mod /path/to/gen1recomp/mods/savesync
-```
-
-Requires Gen1Recomp mod API 2. Desktop (Windows, macOS, Linux) needs `curl`,
-which all three ship. Android without `curl` degrades to read-only rather
-than failing.
-
-### Client ids, if you fork this
-
-Sign-in needs one **public** OAuth client id per provider, which a
-distribution registers once and everybody's copy shares. They are not
-secrets — the GitHub device flow and Dropbox PKCE exist precisely so a
-desktop app needs no client secret — but they are per-distribution, so a fork
-should register its own rather than borrow this one.
-
-| provider | state in [`mod/providers.json`](mod/providers.json) |
-| --- | --- |
-| GitHub | **set** — device flow verified live against GitHub |
-| Dropbox | **set** — app key verified live against Dropbox's token endpoint |
-| self-hosted | needs no client id, works on a fresh checkout |
-
-The registration walkthrough for both is in
-[docs/providers.md](docs/providers.md) and takes about two minutes each.
-
----
-
-## Self-hosting the backend
+If you would rather your saves lived on hardware you own:
 
 ```sh
 cd server
 docker compose up -d
-docker compose logs savesync      # your setup code is printed here
+docker compose logs savesync    # your setup code is printed here
 ```
 
-Paste that code into **SaveSync → Set Up → Use a setup code** on every
-device. Full guide, including free places to run it: [server/README.md](server/README.md).
+Paste that code into **SAVESYNC → Set Up → Use a setup code** on each device.
+See [server/README.md](server/README.md).
 
----
+## For developers
 
-## How it works
-
-```
- in-game SAVE ──► save.writing event ──► debounce 4s
-                                            │
- title screen  ──► game.ready event ────────┤
-                                            ▼
-                                     ┌─────────────┐
-                                     │ sync engine │  compares three hashes
-                                     └──────┬──────┘
-                    upload / download / STOP AND ASK
-                                            │
-                                     ┌──────▼──────┐
-                                     │  provider   │  read / write / list
-                                     └──────┬──────┘
-                          GitHub gist · Dropbox · your server
-```
-
-The safety rule in one paragraph: the mod remembers the last state this
-device and the cloud were known to agree on. If only the local file has moved
-away from it, this device is ahead — upload. If only the cloud has, the other
-device is ahead — download. If **both** have, no automatic answer is correct,
-so it stops. That function is
-[`Sync.decide`](mod/src/sync.lua), and it is tested exhaustively.
-
-| file | what it owns |
-| --- | --- |
-| [`mod/main.lua`](mod/main.lua) | engine wiring: menu rows, the per-frame pump, the save event |
-| [`mod/src/sync.lua`](mod/src/sync.lua) | what to upload, when, and when to refuse |
-| [`mod/src/store.lua`](mod/src/store.lua) | reading and replacing save slots; backups; config |
-| [`mod/src/providers/`](mod/src/providers/) | one file per cloud |
-| [`mod/src/op.lua`](mod/src/op.lua) | coroutine-based async, so no frame ever blocks |
-| [`mod/src/http.lua`](mod/src/http.lua) | HTTP on worker threads, via the engine's own transport |
-| [`server/server.js`](server/server.js) | the self-hosted backend — Node stdlib only, no dependencies |
-
-## Tests
-
-```sh
-luajit tests/run.lua          # codecs, pairing codes, the decision table
-luajit tests/sync.test.lua    # two devices over one cloud, including conflicts
-node   tests/server.test.js   # the self-hosted backend, over real HTTP
-node   tests/e2e.test.js      # the whole stack: sync -> curl -> real server
-```
-
-Green on Windows 11 and on Linux x86_64 (LuaJIT 2.1, curl 7.88/8.19). macOS
-takes the same code path as Linux but has not been run.
-
-Plus `tests/mod_load.test.lua`, which runs inside a Gen1Recomp checkout and
-loads the mod through the engine's own mod SDK — real loader, real hooks,
-real screen construction. See [tests/README.md](tests/README.md).
-
-`tests/sync.test.lua` plays out the sequence that matters: A uploads, B
-adopts, both edit while apart, sync refuses, the player answers, and the
-losing save is still recoverable afterwards. Break the conflict rule and
-eight of its checks fail.
+The sync protocol, storage layout and conflict rules are written up in
+[docs/protocol.md](docs/protocol.md) — small enough to reimplement in an
+afternoon, which is deliberate. Adding a storage backend is one file against a
+four-function interface: [docs/providers.md](docs/providers.md). Tests live in
+[tests/](tests/README.md).
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. Original code and original artwork throughout; the mod ships and uploads
+save data alone.
+
+The sign-in client ids in `mod/providers.json` are public by design — the
+GitHub device flow and Dropbox PKCE exist so a desktop app needs no secret —
+but they are mine. If you fork this, register your own so your players get your
+name on the consent screen and your own rate limit.
+[docs/providers.md](docs/providers.md) walks through it.
