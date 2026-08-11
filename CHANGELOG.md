@@ -26,7 +26,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   engine and the socket, running the HTTP worker's verbatim source against
   real curl and a real server. Verified on Windows and Linux.
 - GitHub client id wired in and verified against the live device-flow
-  endpoint.
+  endpoint; Dropbox app key wired in and verified against the live token
+  endpoint (a real key answers `invalid_grant` to a bogus code, an unknown
+  one answers `invalid_client`).
+- `tests/run.lua` now parses `providers.json` and asserts both client ids are
+  present, so a stray comma or a blanked id fails a test rather than failing
+  sign-in for everyone with no other symptom.
 
 ## [1.0.0] - 2026-08-10
 

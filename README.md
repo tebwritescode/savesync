@@ -105,8 +105,8 @@ should register its own rather than borrow this one.
 
 | provider | state in [`mod/providers.json`](mod/providers.json) |
 | --- | --- |
-| GitHub | **set** — device flow verified against GitHub |
-| Dropbox | empty; picking Dropbox says "not configured" until an app key is added |
+| GitHub | **set** — device flow verified live against GitHub |
+| Dropbox | **set** — app key verified live against Dropbox's token endpoint |
 | self-hosted | needs no client id, works on a fresh checkout |
 
 The registration walkthrough for both is in

@@ -46,6 +46,15 @@ local function pkcePair()
 end
 
 --- Build the page the player signs in on.
+---
+--- NO `scope` PARAMETER, deliberately.  The scopes ticked on the app's
+--- Permissions tab are both the default AND the maximum Dropbox will grant,
+--- so omitting the parameter asks for exactly what the app was configured
+--- with -- and can therefore never over-request and fail.  Naming the three
+--- scopes here instead would only add a way for the sign-in to break if the
+--- app's configuration and this list ever drift apart.  A permission that is
+--- genuinely missing surfaces at the first sync, where `missingScope` names
+--- it exactly.
 function P.authUrl(clientId, challenge, method)
   return "https://www.dropbox.com/oauth2/authorize?"
     .. Util.form({

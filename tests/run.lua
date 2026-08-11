@@ -122,6 +122,44 @@ local lines = Pairing.wrap(code, 19)
 check("pairing: wraps", #lines >= 1 and #lines[1] <= 19)
 eq("pairing: wrap is lossless", table.concat(lines), code)
 
+-- ---------------------------------------------------------- providers
+
+-- providers.json is hand-edited whenever a distribution registers its OAuth
+-- apps, and a stray comma there would break sign-in for everyone with no
+-- other symptom, so it is parsed here rather than trusted.
+local rawProviders = assert(io.open("mod/providers.json", "rb")):read("*a")
+local providersCfg = Json.decode(rawProviders)
+check("providers.json parses", type(providersCfg) == "table")
+if type(providersCfg) == "table" then
+  for _, id in ipairs({ "github", "dropbox" }) do
+    local entry = providersCfg[id]
+    check("providers.json has a " .. id .. " entry", type(entry) == "table")
+    check(id .. " client id is a non-empty string",
+      type(entry) == "table" and type(entry.client_id) == "string"
+        and entry.client_id ~= "",
+      "set it -- see docs/providers.md")
+  end
+end
+
+local Dropbox = SAVESYNC_INCLUDE("src/providers/dropbox.lua")
+local authUrl = Dropbox.authUrl("APPKEY", "CHALLENGE", "S256")
+
+check("dropbox: authorize url points at Dropbox",
+  authUrl:find("^https://www%.dropbox%.com/oauth2/authorize%?") ~= nil)
+check("dropbox: carries the app key", authUrl:find("client_id=APPKEY", 1, true) ~= nil)
+check("dropbox: asks for a code", authUrl:find("response_type=code", 1, true) ~= nil)
+check("dropbox: carries the PKCE challenge",
+  authUrl:find("code_challenge=CHALLENGE", 1, true) ~= nil
+    and authUrl:find("code_challenge_method=S256", 1, true) ~= nil)
+-- offline is what yields a refresh token; without it the link dies after
+-- four hours and every device has to be paired again
+check("dropbox: asks for offline access",
+  authUrl:find("token_access_type=offline", 1, true) ~= nil)
+-- Deliberate: the app's Permissions tab is both the default and the maximum,
+-- so naming scopes here could only ever over-request and fail.
+check("dropbox: sends no scope parameter",
+  authUrl:find("scope=", 1, true) == nil)
+
 -- --------------------------------------------------- the decision table
 
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
