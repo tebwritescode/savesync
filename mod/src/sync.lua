@@ -225,6 +225,14 @@ function Sync.cycle(opts)
         for n, c in pairs(uploadFiles(rec, seq, cloud and cloud.hash, names)) do
           uploads[n] = c
         end
+        -- Keep a local copy of everything published, not only of saves that
+        -- get displaced.  Otherwise a player who only ever uses one device
+        -- has an empty Restore Previous Save list -- there is nothing to
+        -- overwrite them, so nothing ever gets backed up -- and rolling back
+        -- their own mistake would mean going to the cloud for it.
+        -- Store.backup ignores a repeat of the newest bytes, so this does
+        -- not churn through the ten slots on repeated syncs.
+        Store.backup(key, rec.bytes, "sent")
         state.pendingSeq, state.pendingHash = seq, rec.hash
         report.uploaded = report.uploaded + 1
 
@@ -313,10 +321,12 @@ function Sync.resolveKeepLocal(key)
   if not con or not provider then return Op.failed("nothing to resolve") end
   return Op.new(function(ctx)
     local names = ctx:await(provider.list(conf.cfg))
+    persistProviderConfig()
     local rec = Store.readLocal(Store.versionOfKey(key)) or con.localRec
     local seq = (tonumber(con.cloud.seq) or 0) + 1
     ctx:await(provider.write(conf.cfg,
       uploadFiles(rec, seq, con.cloud.hash, names)))
+    persistProviderConfig()
     local state = Store.keyState(key)
     state.syncedHash, state.syncedSeq, state.conflict = rec.hash, seq, nil
     Sync.conflicts[key] = nil
@@ -334,6 +344,7 @@ function Sync.resolveUseCloud(key)
   if not con or not provider then return Op.failed("nothing to resolve") end
   return Op.new(function(ctx)
     local blobs = ctx:await(provider.read(conf.cfg, { savName(key) }))
+    persistProviderConfig()
     local bytes = blobs[savName(key)]
     if type(bytes) ~= "string" or bytes == "" then
       return ctx:fail("the cloud copy has gone missing")
@@ -360,6 +371,7 @@ function Sync.history(key)
   if not provider then return Op.failed("SaveSync is not set up yet") end
   return Op.new(function(ctx)
     local names = ctx:await(provider.list(conf.cfg))
+    persistProviderConfig()
     local out = {}
     for name, size in pairs(names) do
       local k, seq = parseHist(name)
@@ -376,6 +388,7 @@ function Sync.restoreHistory(key, name)
   if not provider then return Op.failed("SaveSync is not set up yet") end
   return Op.new(function(ctx)
     local blobs = ctx:await(provider.read(conf.cfg, { name }))
+    persistProviderConfig()
     local bytes = blobs[name]
     if type(bytes) ~= "string" or bytes == "" then
       return ctx:fail("that version is gone")

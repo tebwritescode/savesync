@@ -141,19 +141,15 @@ local function keyFor(version, save, slotId)
   return version .. "-" .. tostring(slotId or "legacy")
 end
 
---- Read the active save for a version straight off disk.
---- Returns nil when there is nothing saved yet (a brand new install), which
---- is a normal state, not an error.
-function Store.readLocal(version)
+-- Build a record from a slot path.  nil when the slot holds nothing, or
+-- holds something that is not a save -- both normal states, not errors.
+local function recordFor(version, slotId, path)
   local f = fs()
-  if not f then return nil end
-  local path = SaveData.saveFilename(version)
-  if not path or not f.getInfo(path) then return nil end
+  if not f or not path or not f.getInfo(path) then return nil end
   local bytes = f.read(path)
   if type(bytes) ~= "string" or bytes == "" then return nil end
   local ok, save = pcall(SaveSerializer.decode, bytes)
   if not ok or type(save) ~= "table" then return nil end
-  local slotId = SaveData.activeSlot(version)
   return {
     version = version,
     slotId = slotId,
@@ -166,14 +162,68 @@ function Store.readLocal(version)
   }
 end
 
---- Every local save, keyed by sync key.
+--- Read one specific slot.
+function Store.readSlot(version, slotId)
+  if not slotId then return nil end
+  return recordFor(version, slotId,
+    "saves/" .. version .. "/" .. slotId .. ".lua")
+end
+
+--- Read the ACTIVE save for a version -- the one the title screen's CONTINUE
+--- loads.  Still used by the UI, which talks about "this device's save".
+function Store.readLocal(version)
+  local f = fs()
+  if not f then return nil end
+  local path = SaveData.saveFilename(version)
+  if not path then return nil end
+  return recordFor(version, SaveData.activeSlot(version), path)
+end
+
+--- EVERY local save, keyed by sync key: every registered slot of every game
+--- version, not just the active one.
+---
+--- A player with three Red files and a Yellow file has four playthroughs, and
+--- syncing only whichever one they happened to have selected would leave the
+--- other three stranded on one machine.  Slots are independent saves; they
+--- are treated as independent saves.
 function Store.readAllLocal()
   local out = {}
-  for _, v in ipairs(Store.versions()) do
-    local rec = Store.readLocal(v)
-    if rec then out[rec.key] = rec end
+  for _, version in ipairs(Store.versions()) do
+    local slots = SaveData.listSlots(version) or {}
+    local seen = false
+    for _, slot in ipairs(slots) do
+      local rec = slot.exists and Store.readSlot(version, slot.id)
+      if rec then
+        seen = true
+        -- Two slots claiming one playthrough id means a save was copied
+        -- between slots.  Keep the first by slot order and leave the other
+        -- alone rather than have them fight over the same cloud object.
+        if not out[rec.key] then out[rec.key] = rec end
+      end
+    end
+    -- A pre-slots install has a flat save.lua and no registry; listSlots
+    -- migrates it, but on an engine build where it does not, this keeps the
+    -- legacy save syncing instead of silently dropping it.
+    if not seen then
+      local rec = Store.readLocal(version)
+      if rec and not out[rec.key] then out[rec.key] = rec end
+    end
   end
   return out
+end
+
+--- Which slot on this device holds the playthrough a cloud key names, if any.
+--- This is what stops a download landing on the wrong file: without it, a
+--- save pulled for playthrough X would be written into whichever slot
+--- happened to be selected, destroying playthrough Y.
+function Store.findSlotForKey(version, key)
+  for _, slot in ipairs(SaveData.listSlots(version) or {}) do
+    if slot.exists then
+      local rec = Store.readSlot(version, slot.id)
+      if rec and rec.key == key then return slot.id end
+    end
+  end
+  return nil
 end
 
 --- Which engine version a cloud key belongs to.  Keys are "<version>-<id>",
@@ -188,13 +238,24 @@ local function backupDir(key)
   return BACKUP_DIR .. "/" .. tostring(key):gsub("[^%w%-_]", "_")
 end
 
---- Copy bytes into the backup folder for a key.  Returns the filename.
+--- Copy bytes into the backup folder for a key.  Returns the filename, or nil
+--- when there was nothing new to keep.
 function Store.backup(key, bytes, tag)
   local f = fs()
   if not f or type(bytes) ~= "string" or bytes == "" then return nil end
   local dir = backupDir(key)
   f.createDirectory(dir)
-  local name = ("%s-%s-%s.sav"):format(Util.stamp(), Util.short(Util.hash(bytes)),
+  local hash = Util.hash(bytes)
+
+  -- Never store the same bytes twice in a row.  Backups are capped, so a
+  -- duplicate does not just waste space -- it pushes a genuinely different
+  -- older version off the end of the list.
+  local existing = f.getInfo(dir) and f.getDirectoryItems(dir) or {}
+  table.sort(existing)
+  local newest = existing[#existing]
+  if newest and newest:find(Util.short(hash), 1, true) then return nil end
+
+  local name = ("%s-%s-%s.sav"):format(Util.stamp(), Util.short(hash),
     tag or "local")
   if not f.write(dir .. "/" .. name, bytes) then return nil end
 
@@ -259,32 +320,52 @@ function Store.validate(bytes, version)
   return save
 end
 
---- Replace the active save for a version with `bytes`, backing up whatever
---- was there first.  `tag` labels the backup so Restore can say where the
+--- Write `bytes` into the slot that belongs to `key`, backing up whatever was
+--- there first.  `tag` labels the backup so Restore can say where the
 --- displaced save came from.
+---
+--- THE SLOT IS CHOSEN BY PLAYTHROUGH, NEVER BY WHAT IS SELECTED.  A download
+--- for playthrough X must land in the slot holding playthrough X; writing it
+--- into whichever slot happened to be active would destroy an unrelated
+--- playthrough, which is the one thing this mod exists not to do.  A
+--- playthrough this device has never seen gets a NEW slot -- and does not
+--- steal the active selection from a save the player is in the middle of.
 function Store.apply(version, key, bytes, tag)
   local save, err = Store.validate(bytes, version)
   if not save then return false, err end
 
-  local current = Store.readLocal(version)
+  local slotId = key and Store.findSlotForKey(version, key) or nil
+  local isNewSlot = false
+  if not slotId then
+    -- Fall back to the active slot only when it is EMPTY or already holds
+    -- this same playthrough; otherwise take a fresh slot.
+    local active = SaveData.activeSlot(version)
+    local activeRec = active and Store.readSlot(version, active) or nil
+    if active and (not activeRec or not key or activeRec.key == key) then
+      slotId = active
+    else
+      slotId = SaveData.createSlot(version)
+      isNewSlot = true
+      if not slotId then
+        return false, "could not make a save slot for " .. tostring(version)
+      end
+    end
+  end
+
+  local current = Store.readSlot(version, slotId)
   if current then
     Store.backup(key or current.key, current.bytes, tag or "replaced")
   end
 
-  local slotId = SaveData.activeSlot(version)
-  if not slotId then
-    -- Nothing registered yet (a fresh install pulling a save down for the
-    -- first time): make a slot and make it the one the title screen loads,
-    -- or CONTINUE would find nothing after a successful download.
-    slotId = SaveData.createSlot(version)
-    if not slotId then
-      return false, "could not make a save slot for " .. tostring(version)
-    end
-    SaveData.setActiveSlot(version, slotId)
-  end
-
   local ok, werr = SaveData.writeSlot(version, slotId, save)
   if not ok then return false, tostring(werr or "could not write the save") end
+
+  -- Point CONTINUE at the new file only when nothing was selected before --
+  -- a fresh install adopting its first save. Otherwise the player's current
+  -- selection is theirs to change, not ours.
+  if isNewSlot and not SaveData.activeSlot(version) then
+    SaveData.setActiveSlot(version, slotId)
+  end
   return true
 end
 

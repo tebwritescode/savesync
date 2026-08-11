@@ -27,6 +27,7 @@ end
 package.loaded["src.core.SaveData"] = {
   saveFilename = function() return nil end,
   activeSlot = function() return nil end,
+  listSlots = function() return {} end,
   createSlot = function() return nil end,
   setActiveSlot = function() end,
   writeSlot = function() return true end,

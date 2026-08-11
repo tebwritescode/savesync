@@ -102,6 +102,14 @@ local function newDevice(name)
       return a and ("saves/" .. version .. "/" .. a .. ".lua") or nil
     end,
     activeSlot = function() return slots.active end,
+    listSlots = function(version)
+      local out = {}
+      for _, id in ipairs(slots.list) do
+        out[#out + 1] = { id = id,
+          exists = dev.disk["saves/" .. version .. "/" .. id .. ".lua"] ~= nil }
+      end
+      return out
+    end,
     createSlot = function()
       local id = "slot" .. (#slots.list + 1)
       slots.list[#slots.list + 1] = id
@@ -116,6 +124,7 @@ local function newDevice(name)
       return (save.player and save.player.name), { badges = save.badges or 0 }
     end,
   }
+  dev.slots = slots
   dev.serializer = {
     encode = serialize,
     decode = function(s)
@@ -345,6 +354,103 @@ check("local backups are bounded", #finalBackups <= 10, "kept " .. #finalBackups
 if #finalBackups > 1 then
   check("newest backup first", finalBackups[1].name > finalBackups[2].name)
 end
+
+-- 9. MULTIPLE SAVE FILES.
+--
+-- Slots are independent playthroughs. Two things must hold: all of them sync
+-- (not just whichever is selected), and a save arriving from the cloud lands
+-- in the slot that holds ITS playthrough -- never in whichever slot happens
+-- to be active, which would destroy an unrelated game.
+
+local function playIn(dev, slotId, tbl)
+  activate(dev)
+  local known = false
+  for _, id in ipairs(dev.slots.list) do
+    if id == slotId then known = true end
+  end
+  if not known then dev.slots.list[#dev.slots.list + 1] = slotId end
+  dev.saveData.writeSlot("red", slotId, tbl)
+end
+
+local C = newDevice("Device C")
+playIn(C, "slot1", { version = "red", player = { name = "ASH" }, badges = 4,
+  meta = { playthroughId = "PLAYAAAA", savedAt = 900 } })
+playIn(C, "slot2", { version = "red", player = { name = "GARY" }, badges = 6,
+  meta = { playthroughId = "PLAYBBBB", savedAt = 910 } })
+activate(C)
+C.slots.active = "slot1"
+
+eq("C syncs both files", sync(C), "idle")
+check("first playthrough reached the cloud",
+  cloud.files["red-PLAYAAAA.sav"] ~= nil, table.concat(cloudKeys(), ", "))
+check("second playthrough reached the cloud",
+  cloud.files["red-PLAYBBBB.sav"] ~= nil, table.concat(cloudKeys(), ", "))
+
+-- A fresh device takes both down, into two separate slots.
+local D2 = newDevice("Device D")
+eq("D syncs cleanly", sync(D2), "idle")
+activate(D2)
+local dSlots = {}
+for _, s in ipairs(D2.saveData.listSlots("red")) do
+  local rec = D2.Store.readSlot("red", s.id)
+  if rec then dSlots[rec.key] = rec.save.badges end
+end
+eq("D adopted the first playthrough", dSlots["red-PLAYAAAA"], 4)
+eq("D adopted the second playthrough", dSlots["red-PLAYBBBB"], 6)
+
+-- The invariant that matters is ONE SLOT PER PLAYTHROUGH -- not a fixed
+-- count, since this shared cloud also still holds the playthrough from the
+-- conflict scenario above, and adopting that one too is correct.
+local function slotsAndKeys(dev)
+  activate(dev)
+  local slots = dev.saveData.listSlots("red")
+  local keys = {}
+  local n = 0
+  for _, s in ipairs(slots) do
+    local rec = dev.Store.readSlot("red", s.id)
+    if rec and not keys[rec.key] then keys[rec.key] = true n = n + 1 end
+  end
+  return #slots, n
+end
+
+local dSlotCount, dKeyCount = slotsAndKeys(D2)
+eq("D made one slot per playthrough, no duplicates", dSlotCount, dKeyCount)
+check("D adopted every cloud playthrough", dKeyCount >= 3, "keys=" .. dKeyCount)
+
+-- THE OVERWRITE TEST. Device C is sitting on slot1 (PLAYAAAA). Device D
+-- advances the OTHER playthrough and publishes it. C must put that update in
+-- slot2 and leave the slot it is looking at completely alone.
+local before = nil
+activate(C)
+before = C.Store.readSlot("red", "slot1").bytes
+
+-- activate FIRST: the modules are per-device but the love global is not, so
+-- reading D's store while C is active would read C's disk through D's code.
+activate(D2)
+local dSlotForB
+for _, s in ipairs(D2.saveData.listSlots("red")) do
+  local rec = D2.Store.readSlot("red", s.id)
+  if rec and rec.key == "red-PLAYBBBB" then dSlotForB = s.id end
+end
+check("found D's slot for the second playthrough", dSlotForB ~= nil)
+playIn(D2, dSlotForB, { version = "red", player = { name = "GARY" }, badges = 8,
+  meta = { playthroughId = "PLAYBBBB", savedAt = 920 } })
+eq("D publishes the second playthrough", sync(D2), "idle")
+
+activate(C)
+C.slots.active = "slot1"
+eq("C takes the update", sync(C), "idle")
+eq("C updated the right slot", C.Store.readSlot("red", "slot2").save.badges, 8)
+eq("C left the selected slot untouched",
+  C.Store.readSlot("red", "slot1").bytes, before)
+local cSlotCount, cKeyCount = slotsAndKeys(C)
+eq("C still holds one slot per playthrough", cSlotCount, cKeyCount)
+
+-- 10. Uploading also leaves a local copy, so a single-device player has
+-- something in Restore Previous Save without ever having been overwritten.
+activate(C)
+check("an upload leaves a local backup",
+  #C.Store.listBackups("red-PLAYAAAA") > 0)
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

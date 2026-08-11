@@ -3,9 +3,31 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-11
+
+### Added
+- **Every save file syncs, not just the selected one.** Slots are independent
+  playthroughs; a player with three Red files and a Yellow file has four, and
+  only the active one was being synced. `readAllLocal` now walks every
+  registered slot of every version.
+- Uploads now leave a local backup too, tagged `sent`. Previously backups were
+  only written when a save was *displaced*, so a player who only ever used one
+  device had an empty Restore Previous Save list -- nothing overwrote them, so
+  nothing was ever kept. Duplicate bytes are skipped so the ten slots are not
+  churned by repeated syncs.
+- Credentials refreshed during a conflict resolution or a restore are now
+  persisted, not just those refreshed during a normal cycle.
 
 ### Fixed
+- **A download could overwrite an unrelated playthrough.** `Store.apply` wrote
+  into whichever slot happened to be *selected*, so a save arriving for
+  playthrough X landed on top of playthrough Y. It now finds the slot holding
+  that playthrough by its id, creates a new slot for one this device has never
+  seen, and never steals the active selection from a save in progress. The
+  mutation test for this reports a 4-badge file replaced by an unrelated
+  20-badge one.
+
+### Fixed -- transport and Dropbox setup
 - **Every Dropbox call would have failed on Windows.** Requests were assembled
   as a curl command line quoted with `HostShell.quote`, which on Windows
   *deletes* double quotes from an argument rather than escaping them (cmd.exe
@@ -21,7 +43,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   Without it `list()` fails — the first call of every sync — so setup would
   have looked complete and then never worked.
 
-### Added
+### Added -- verification
 - `tests/e2e.test.js`: the whole stack with nothing stubbed between the sync
   engine and the socket, running the HTTP worker's verbatim source against
   real curl and a real server. Verified on Windows and Linux.

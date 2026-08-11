@@ -215,6 +215,14 @@ local function newDevice(name, dirName)
       return a and ("saves/" .. version .. "/" .. a .. ".lua") or nil
     end,
     activeSlot = function() return slots.active end,
+    listSlots = function(version)
+      local out = {}
+      for _, id in ipairs(slots.list) do
+        out[#out + 1] = { id = id,
+          exists = dev.fs.getInfo("saves/" .. version .. "/" .. id .. ".lua") ~= nil }
+      end
+      return out
+    end,
     createSlot = function()
       local id = "slot" .. (#slots.list + 1)
       slots.list[#slots.list + 1] = id
