@@ -3,6 +3,31 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Every Dropbox call would have failed on Windows.** Requests were assembled
+  as a curl command line quoted with `HostShell.quote`, which on Windows
+  *deletes* double quotes from an argument rather than escaping them (cmd.exe
+  has no safe escape it could use). Dropbox passes its file arguments as JSON
+  in a `Dropbox-API-Arg` header, so every upload and download would have gone
+  out malformed. All arguments now go through a curl config file, which has
+  its own quoting rules, leaving only a path we chose exposed to a shell.
+- A Dropbox permission the app was never granted returns a 401 that looks
+  exactly like an expired token. It was triggering a pointless refresh and
+  then reporting "sign-in expired" at someone whose sign-in was fine; it is
+  now detected and names the missing scope.
+- `docs/providers.md` omitted `files.metadata.read` from the Dropbox setup.
+  Without it `list()` fails — the first call of every sync — so setup would
+  have looked complete and then never worked.
+
+### Added
+- `tests/e2e.test.js`: the whole stack with nothing stubbed between the sync
+  engine and the socket, running the HTTP worker's verbatim source against
+  real curl and a real server. Verified on Windows and Linux.
+- GitHub client id wired in and verified against the live device-flow
+  endpoint.
+
 ## [1.0.0] - 2026-08-10
 
 First release.

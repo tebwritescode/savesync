@@ -168,7 +168,11 @@ so it stops. That function is
 luajit tests/run.lua          # codecs, pairing codes, the decision table
 luajit tests/sync.test.lua    # two devices over one cloud, including conflicts
 node   tests/server.test.js   # the self-hosted backend, over real HTTP
+node   tests/e2e.test.js      # the whole stack: sync -> curl -> real server
 ```
+
+Green on Windows 11 and on Linux x86_64 (LuaJIT 2.1, curl 7.88/8.19). macOS
+takes the same code path as Linux but has not been run.
 
 Plus `tests/mod_load.test.lua`, which runs inside a Gen1Recomp checkout and
 loads the mod through the engine's own mod SDK — real loader, real hooks,

@@ -69,8 +69,11 @@ local saveDir = love.filesystem.getSaveDirectory()
 -- curl expands the escape itself, so the format string carries the two
 -- characters backslash-n rather than a real newline (the same reason
 -- HostShell writes its own marker that way).
+-- A REAL newline here; cfgValue turns it into the \n escape curl's config
+-- parser wants.  Writing the escape by hand instead would get double-escaped
+-- into a literal backslash-n and the status marker would never be found.
 local MARK = "SAVESYNC-STATUS:"
-local MARK_FMT = "\\n" .. MARK .. "%{http_code}"
+local MARK_FMT_CFG = "\n" .. MARK .. "%{http_code}"
 
 local function post(t) resCh:push(t) end
 
@@ -97,18 +100,32 @@ local function split(out)
   return body, code
 end
 
+-- Escape one value for curl's own config-file syntax: inside double quotes it
+-- honours \\, \" and \n / \r / \t, and nothing else.  Backslash goes first or
+-- it would escape the escapes we are about to add.
+local function cfgValue(s)
+  s = tostring(s)
+    :gsub("\\", "\\\\")
+    :gsub('"', '\\"')
+    :gsub("\n", "\\n")
+    :gsub("\r", "\\r")
+    :gsub("\t", "\\t")
+  return '"' .. s .. '"'
+end
+
 local function doRequest(job)
   if not HostShell then
     post({ id = job.id, ok = false, err = "no transport" })
     return
   end
 
+  local tmpDir = "savesync/tmp"
   local bodyPath
   if job.body and #job.body > 0 then
     -- Bodies go through a file, never the command line: a save blob is tens
     -- of kilobytes of arbitrary bytes and no shell quoting survives that.
-    love.filesystem.createDirectory("savesync/tmp")
-    bodyPath = "savesync/tmp/req-" .. tostring(job.id) .. ".bin"
+    love.filesystem.createDirectory(tmpDir)
+    bodyPath = tmpDir .. "/req-" .. tostring(job.id) .. ".bin"
     local okW = love.filesystem.write(bodyPath, job.body)
     if not okW then
       post({ id = job.id, ok = false, err = "could not stage request body" })
@@ -134,32 +151,64 @@ local function doRequest(job)
     return
   end
 
-  -- The ceiling is also the worst case for how long closing the window can
-  -- take: a worker inside a blocking curl cannot notice anything until curl
-  -- returns, and LÖVE waits for live threads before the process exits.
-  local cmd = "curl -sS --connect-timeout 10 --max-time "
-    .. tostring(tonumber(job.timeout) or 20) .. " "
-    .. "-X " .. quoting(job.method or "GET") .. " "
+  -- EVERY ARGUMENT GOES IN A CURL CONFIG FILE, not on the command line.
+  --
+  -- HostShell.quote is built for the launcher's URLs, and on Windows it
+  -- DELETES double quotes from the argument rather than escaping them
+  -- (cmd.exe has no single-quote form, so there is no safe escape it could
+  -- use).  That is fine for a URL and fatal for a header: Dropbox takes its
+  -- file arguments as JSON in a `Dropbox-API-Arg` header, so every upload
+  -- and download on Windows would have gone out with the quotes stripped and
+  -- been rejected as malformed.
+  --
+  -- curl -K reads options from a file with its own quoting rules, so the
+  -- only thing that touches a shell is the config file's path -- which we
+  -- chose.  It fixes the header case and makes the URL and the write-out
+  -- format immune to the same class of bug.
+  love.filesystem.createDirectory(tmpDir)
+  local cfgPath = tmpDir .. "/req-" .. tostring(job.id) .. ".curl"
+  local cfg = {
+    "silent",
+    "show-error",
+    -- The ceiling is also the worst case for how long closing the window can
+    -- take: a worker inside a blocking curl cannot notice anything until
+    -- curl returns, and LÖVE waits for live threads before the process exits.
+    "connect-timeout = 10",
+    "max-time = " .. tostring(tonumber(job.timeout) or 20),
+    "request = " .. cfgValue(job.method or "GET"),
+    "url = " .. cfgValue(job.url),
+    "write-out = " .. cfgValue(MARK_FMT_CFG),
+  }
   for _, h in ipairs(job.headers or {}) do
-    cmd = cmd .. "-H " .. quoting(h) .. " "
+    cfg[#cfg + 1] = "header = " .. cfgValue(h)
   end
   if bodyPath then
-    cmd = cmd .. "--data-binary " .. quoting("@" .. saveDir .. "/" .. bodyPath) .. " "
+    cfg[#cfg + 1] = "data-binary = " .. cfgValue("@" .. saveDir .. "/" .. bodyPath)
   end
+  if not love.filesystem.write(cfgPath, table.concat(cfg, "\n") .. "\n") then
+    if bodyPath then love.filesystem.remove(bodyPath) end
+    post({ id = job.id, ok = false, err = "could not stage the request" })
+    return
+  end
+
   -- 2>&1 so curl's own diagnosis ("could not resolve host") lands in the
-  -- body when there is no HTTP status at all; without it a DNS failure and
+  -- output when there is no HTTP status at all; without it a DNS failure and
   -- an empty 200 look identical to the caller.
-  cmd = cmd .. "-w " .. quoting(MARK_FMT) .. " " .. quoting(job.url) .. " 2>&1"
+  local cmd = "curl -K " .. quoting(saveDir .. "/" .. cfgPath) .. " 2>&1"
 
   local pipe = HostShell.popen(cmd)
   if not pipe then
     if bodyPath then love.filesystem.remove(bodyPath) end
+    love.filesystem.remove(cfgPath)
     post({ id = job.id, ok = false, err = "could not run curl" })
     return
   end
   local readOk, out = pcall(function() return pipe:read("*a") end)
   HostShell.pclose(pipe)
   if bodyPath then love.filesystem.remove(bodyPath) end
+  -- The config file carries the Authorization header, so it does not linger
+  -- on disk a moment longer than the request it configured.
+  love.filesystem.remove(cfgPath)
 
   if not readOk or type(out) ~= "string" then
     post({ id = job.id, ok = false, err = "curl produced no output" })

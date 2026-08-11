@@ -165,6 +165,22 @@ local function refresh(ctx, cfg)
   return true
 end
 
+-- Dropbox answers a permission the app was never granted with a 401 whose
+-- body is `missing_scope`, which looks exactly like an expired token and is
+-- not one.  Refreshing cannot fix it -- the token is fine, the APP is missing
+-- a permission -- so it has to be told apart, or the only symptom is a
+-- refresh loop reporting "sign-in expired" at someone whose sign-in is
+-- perfectly good.  The required scope is in the body; put it in the message,
+-- because the fix is to tick that box in the App Console.
+local function missingScope(res)
+  if not (res and res.code == 401 and type(res.body) == "string") then return nil end
+  if not res.body:find("missing_scope", 1, true) then return nil end
+  local want = res.body:match('"required_scope"%s*:%s*"([^"]+)"')
+  return "your Dropbox app is missing the "
+    .. (want or "required")
+    .. " permission -- add it, then set up SaveSync again"
+end
+
 -- One authenticated call, refreshing once on expiry or a 401.
 local function call(ctx, cfg, req)
   if not cfg.access or (cfg.expires or 0) <= os.time() then
@@ -176,10 +192,14 @@ local function call(ctx, cfg, req)
   req.headers["User-Agent"] = UA
   local res = ctx:http(req)
   if res.ok and res.code == 401 then
+    local scopeErr = missingScope(res)
+    if scopeErr then return nil, scopeErr end
     local ok, err = refresh(ctx, cfg)
     if not ok then return nil, err end
     req.headers["Authorization"] = "Bearer " .. cfg.access
     res = ctx:http(req)
+    scopeErr = missingScope(res)
+    if scopeErr then return nil, scopeErr end
   end
   if not res.ok then return nil, res.err or "no connection" end
   return res

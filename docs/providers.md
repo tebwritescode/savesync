@@ -75,11 +75,29 @@ the same storage after signing in.
 1. <https://www.dropbox.com/developers/apps> → **Create app**
 2. Choose **Scoped access**, then **App folder** (*not* Full Dropbox). The
    mod will only ever see `Apps/<your app name>/`.
-3. Name it, create it, then on the **Permissions** tab enable
-   `files.content.write` and `files.content.read`, and **Submit**.
-4. Copy the **App key** into `mod/providers.json` under `dropbox.client_id`.
+3. Name it and create it.
+4. On the **Permissions** tab tick **all three** of these, then **Submit**:
+
+   | scope | what needs it |
+   | --- | --- |
+   | `files.metadata.read` | `list()` — the **first call of every sync**, so miss this and nothing works at all |
+   | `files.content.read` | downloading a save |
+   | `files.content.write` | uploading a save, and pruning old history |
+
+   `files.metadata.read` is the easy one to miss, because "read the file"
+   sounds like it should cover "see that the file exists". It does not:
+   `/2/files/list_folder` is a metadata call.
+
+5. On **Settings**, copy the **App key** into `mod/providers.json` under
+   `dropbox.client_id`.
 
 No app secret is needed — the flow is PKCE.
+
+**Permissions do not apply to tokens that already exist.** If you sign in and
+*then* fix the scopes, the token you are holding still lacks them. Disconnect
+in the game and set up again to mint a new one. The mod detects this case
+specifically and says which permission is missing rather than claiming your
+sign-in expired.
 
 **One limit worth knowing before you ship:** a Dropbox app in development
 status is capped at a small number of linked accounts (50 at the time of
