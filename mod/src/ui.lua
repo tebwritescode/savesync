@@ -121,6 +121,46 @@ return function(mod, cfgOpts)
         self.scroll = 0
       end
 
+      -- ------------------------------------------------- the reader
+      --
+      -- WHY A SEPARATE VIEW.  UP/DOWN already drive the menu cursor, so
+      -- scrolling text with the same keys on the same screen means one of the
+      -- two silently stops working depending on where the cursor is -- the
+      -- kind of thing that reads as a broken game.  Long text therefore gets
+      -- its own full-screen view, entered deliberately and left with B.
+      -- Nothing else is on screen, so UP/DOWN can only mean one thing.
+      --
+      -- This exists because a real player hit `GitHub said HTTP 400`, saw it
+      -- cut to `GitHub said HTTP 40`, and could not tell 400 from 404.  An
+      -- error the player cannot finish reading is a bug.
+      local READER_ROWS = 8
+
+      -- Clamp a scroll offset so neither end can be overshot.  Separate from
+      -- the drawing so it can be tested without a font.
+      function self.clampReader(offset, total, rows)
+        local maxOffset = math.max(0, total - rows)
+        if offset < 0 then return 0 end
+        if offset > maxOffset then return maxOffset end
+        return offset
+      end
+
+      function self:openReader(title, text)
+        self.reader = { title = title or "DETAILS",
+                        lines = Util.wrap(text or "", WRAP_WIDTH), scroll = 0 }
+        goto_("reader")
+      end
+
+      -- The text worth offering a reader for: whatever the player is most
+      -- likely to be squinting at right now.
+      local function longText()
+        local candidates = { self.message, Sync.status }
+        for _, t in ipairs(candidates) do
+          if t and t ~= "" and #Util.wrap(t, WRAP_WIDTH) > 2 then return t end
+        end
+        return nil
+      end
+
+
       -- --------------------------------------------------- menu models
 
       -- Auto save has nothing to do with the cloud -- it is worth having on a
@@ -194,6 +234,15 @@ return function(mod, cfgOpts)
 
       local function mainItems()
         local items = {}
+        -- Only offered when there is genuinely more text than fits: a row
+        -- that is always present but usually says nothing is worse than no
+        -- row at all on a screen this small.
+        local long = longText()
+        if long then
+          items[#items + 1] = { "Read full message", function()
+            self:openReader("MESSAGE", long)
+          end }
+        end
         if not Sync.configured() then
           items[#items + 1] = { "Set Up", function() goto_("setup") end }
           items[#items + 1] = autosaveRow()
@@ -361,6 +410,7 @@ return function(mod, cfgOpts)
       -- ---------------------------------------------------- update
 
       local function currentItems()
+        if self.view == "reader" then return {} end
         if self.view == "main" then return mainItems() end
         if self.view == "setup" then return setupItems() end
         if self.view == "pair" then return pairItems() end
@@ -559,6 +609,22 @@ return function(mod, cfgOpts)
           end
         end
 
+        -- The reader owns the d-pad while it is open; falling through to the
+        -- menu here is what would let a scroll silently move the cursor
+        -- behind the text.
+        if self.view == "reader" and self.reader then
+          local r = self.reader
+          if input:wasPressed("up") then
+            r.scroll = self.clampReader(r.scroll - 1, #r.lines, READER_ROWS)
+          elseif input:wasPressed("down") then
+            r.scroll = self.clampReader(r.scroll + 1, #r.lines, READER_ROWS)
+          elseif input:wasPressed("b") or input:wasPressed("a") then
+            self.reader = nil
+            goto_("main")
+          end
+          return
+        end
+
         local items = currentItems()
         clampScroll(#items)
 
@@ -631,8 +697,36 @@ return function(mod, cfgOpts)
         return lines
       end
 
+      -- The charmap has no up-arrow glyph (Theme.moreArrow only points down),
+      -- so the "more above" marker is drawn, mirroring the tick above.
+      local function drawUpArrow(x, y)
+        local r, g, b, a = love.graphics.getColor()
+        love.graphics.setColor(0, 0, 0, 1)
+        love.graphics.rectangle("fill", x + 3, y, 2, 2)
+        love.graphics.rectangle("fill", x + 2, y + 2, 4, 2)
+        love.graphics.rectangle("fill", x + 1, y + 4, 6, 2)
+        love.graphics.setColor(r, g, b, a)
+      end
+
       function self:draw()
         Font.drawBox(0, 0, 20, 18)
+
+        if self.view == "reader" and self.reader then
+          local r = self.reader
+          Font.draw(r.title:sub(1, 17), 16, 8)
+          for row = 1, READER_ROWS do
+            local line = r.lines[r.scroll + row]
+            if not line then break end
+            Font.draw(line, 8, 24 + (row - 1) * 12)
+          end
+          if r.scroll > 0 then drawUpArrow(148, 22) end
+          if r.scroll + READER_ROWS < #r.lines then
+            Font.drawCode(Theme.moreArrow, 148, 122)
+          end
+          Font.draw("B: back", 8, 134)
+          return
+        end
+
         Font.draw("SAVESYNC", 16, 8)
 
         local y = 22

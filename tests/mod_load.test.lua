@@ -125,5 +125,56 @@ do
   end
 end
 
+-- ---- the reader: a long error must be reachable, not merely wrapped.
+-- This is the regression for a real field bug: `GitHub said HTTP 400` drew as
+-- `GitHub said HTTP 40`, and 400 could not be told from 404.
+do
+  local pressed = {}
+  local game = {
+    input = { wasPressed = function(_, k) return pressed[k] == true end },
+    stack = { states = {}, pop = function(s) table.remove(s.states) end },
+  }
+  local ok, screen = pcall(Data.screens.SaveSync.new, game)
+  T.check(ok and type(screen) == "table", "screen constructs for the reader test")
+  if ok and screen then
+    -- clamping is pure and must never overshoot either end
+    T.eq(screen.clampReader(-5, 20, 8), 0, "reader cannot scroll above the top")
+    T.eq(screen.clampReader(99, 20, 8), 12, "reader cannot scroll past the end")
+    T.eq(screen.clampReader(3, 20, 8), 3, "a valid offset is left alone")
+    T.eq(screen.clampReader(2, 4, 8), 0,
+      "content shorter than the window cannot scroll")
+    T.eq(screen.clampReader(0, 0, 8), 0, "empty content cannot scroll")
+
+    local long = "GitHub said HTTP 400 Problems parsing JSON while writing "
+      .. "the save file, which usually means the payload was not valid UTF-8 "
+      .. "and the upload was refused before anything was stored."
+    screen:openReader("ERROR", long)
+    T.eq(screen.view, "reader", "the reader opens")
+    T.check(#screen.reader.lines > 8, "the message really does overflow")
+
+    pressed.down = true
+    screen:update(0.016)
+    T.check(screen.reader.scroll > 0, "DOWN scrolls the reader")
+    local top = screen.reader.scroll
+    for _ = 1, 50 do screen:update(0.016) end
+    T.eq(screen.reader.scroll, #screen.reader.lines - 8,
+      "scrolling stops at the last line")
+    T.check(screen.reader.scroll > top, "and it got there by scrolling")
+
+    pressed.down = false
+    pressed.up = true
+    for _ = 1, 100 do screen:update(0.016) end
+    T.eq(screen.reader.scroll, 0, "UP returns to the top and stops")
+
+    -- B must always lead back out; getting stuck in a reader would be worse
+    -- than the truncation it replaced.
+    pressed.up = false
+    pressed.b = true
+    screen:update(0.016)
+    T.eq(screen.view, "main", "B leaves the reader")
+    T.eq(screen.reader, nil, "and drops the text it was holding")
+  end
+end
+
 r.release()
 T.finish("savesync load")

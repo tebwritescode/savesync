@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-08-11
+
+### Added
+- **Scrollable text.** Any message too long for the screen now offers a
+  `Read full message` row that opens a full-screen reader: UP/DOWN scroll, B
+  returns, a drawn up-arrow and the vanilla more-arrow mark both ends.
+  - It is a **separate view** on purpose. UP/DOWN already drive the menu
+    cursor, so scrolling text on the same screen means one of the two
+    silently stops working depending on where the cursor sits -- which reads
+    as a broken game. Alone on its own screen, UP/DOWN can only mean one
+    thing, and the reader takes the d-pad before the menu ever sees it.
+  - The row only appears when the text genuinely overflows; a row that is
+    usually inert is worse than no row on a 160x144 screen.
+  - This closes the loop on the field bug: `GitHub said HTTP 400` drew as
+    `GitHub said HTTP 40`, and 400 could not be told from 404.
+
 ## [1.3.0] - 2026-08-11
 
 ### Fixed
