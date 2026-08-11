@@ -177,7 +177,13 @@ const server = http.createServer(async (req, res) => {
       const raw = await readBody(req, MAX_BODY_BYTES);
       let payload;
       try {
-        payload = JSON.parse(raw.toString('utf8'));
+        // fatal:true, NOT raw.toString('utf8'). The lenient decoder replaces
+        // every invalid byte with U+FFFD, so a save that is not valid UTF-8
+        // would be accepted and stored CORRUPTED, with no error anywhere --
+        // the worst possible outcome for a backup service. Clients send
+        // payloads base64-wrapped precisely so this can never fire; if it
+        // does, something upstream is broken and silence would hide it.
+        payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw));
       } catch (_) {
         return send(res, 400, { error: 'bad json' });
       }

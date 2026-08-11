@@ -8,7 +8,7 @@ A provider stores a flat set of named blobs. For each save:
 
 | name | contents |
 | --- | --- |
-| `<key>.sav` | the save file, byte-identical to what the game wrote |
+| `<key>.sav` | the save file, base64 behind a `b64:` prefix (see below) |
 | `<key>.json` | the manifest below |
 | `<key>.h<seq>.sav` | a previous version, `seq` zero-padded to four digits |
 
@@ -21,6 +21,31 @@ whatever save slot it lands in there.
 A save with no playthrough id yet (a pre-identity save, before the next
 in-game SAVE stamps one in) uses `<version>-<slotId>`, which is stable on the
 device that holds it.
+
+## Payloads are base64, and why
+
+A save is a **byte string, not text**. The engine serialises with Lua's `%q`,
+which passes bytes >= 0x80 through raw, so `save.lua` need not be valid UTF-8.
+
+Sending those bytes inside JSON does not work. Real GitHub answers
+`400 {"message":"Problems parsing JSON"}` and the upload is lost; a naive
+server is worse, because Node's lenient UTF-8 decoder rewrites each bad byte
+as U+FFFD and stores a **corrupted save while reporting success**.
+
+So every payload that is save BYTES -- `<key>.sav`, `<key>.h<seq>.sav`, and
+snapshot objects -- is stored as:
+
+```
+b64:<standard base64 of the raw bytes>
+```
+
+The prefix is self-describing on purpose: it needs no manifest flag, and an
+object written by an older build (raw) still reads back, which matters because
+history entries outlive the code that wrote them.
+
+`<key>.json` is exempt. The mod generates it, it is ASCII by construction, and
+leaving it plain keeps a gist readable by a human who wants to see what
+happened.
 
 ## The manifest
 

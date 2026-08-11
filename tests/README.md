@@ -1,15 +1,16 @@
 # Tests
 
-Five suites, none of which need a ROM, a GPU, or an internet connection.
+Six suites, none of which need a ROM, a GPU, or an internet connection.
 
 ```sh
 luajit tests/run.lua           # codecs, pairing codes, the decision table
 luajit tests/sync.test.lua     # two devices over one shared cloud
 node   tests/server.test.js    # the self-hosted backend, over real HTTP
 node   tests/e2e.test.js       # the whole stack: sync -> curl -> server
+node   tests/github.test.js    # the GitHub provider, over real HTTP
 ```
 
-`e2e.test.js` needs `luajit` and `curl` on PATH.
+`e2e.test.js` and `github.test.js` need `luajit` and `curl` on PATH.
 
 The fourth runs inside a Gen1Recomp checkout, because it loads the mod
 through the engine's own mod SDK:
@@ -77,6 +78,41 @@ that behaviour and the test reports exactly what Dropbox would have received:
 got {path:/red-E2E00001.sav,mode:overwrite,mute:true}
 want {"path":"/red-E2E00001.sav","mode":"overwrite","mute":true}
 ```
+
+**`github.test.js`** — exists because a real player signed in with GitHub, a
+gist was created holding only the link-time README, and no save ever
+arrived, and `mod/src/providers/github.lua` had zero coverage past "did
+`link()` return a cfg" to have caught it. GitHub has no sandbox to point a
+real integration test at, so this stands one up: a fake gist API and OAuth
+device flow, Node stdlib only, driven from `tests/github_client.lua` through
+the real HTTP worker and real curl, same trick as `e2e_client.lua`. `cfg`
+grows a same-shaped `apiBase`/`webBase` pair the provider reads if present
+and ignores otherwise — nil for a real sign-in, so it costs a real player
+nothing.
+
+It found the bug for real. `apiHeaders()` never set `Content-Type`, so curl
+labelled every `POST /gists` and `PATCH /gists/{id}` —
+`Json.encode()`'d text, every time — as `application/x-www-form-urlencoded`
+by default. Confirmed empirically by reverting the header and re-running:
+
+```
+FAIL: POST /gists Content-Type (/gists)  -- got "application/x-www-form-urlencoded", want "application/json"
+FAIL: PATCH /gists/fakegist1 Content-Type  -- got "application/x-www-form-urlencoded", want "application/json"
+```
+
+Fixed by adding `Content-Type: application/json` to `apiHeaders()`. The gist
+fixtures are deliberately realistic — a numeric `owner.id`, a nested `files`
+map, a `history` array, several JSON `null`s — because `mod/src/json.lua` is
+a hand-written decoder and a hand-trimmed fixture only ever proves the
+decoder can read a hand-trimmed fixture. Beyond the header, the suite
+asserts a full write actually lands the save and its manifest next to the
+README (not just the README, which is the exact shape of the original bug),
+that a mixed write can update one file and delete another in the same PATCH,
+that an all-deletions write — the one code path that has to splice every
+`null` in by string surgery because `Json.encode` has no way to emit a bare
+`null` — still produces valid JSON, that a missing file reads back absent
+rather than erroring, and that a second device's sign-in finds the first
+device's gist by its description marker instead of creating a second one.
 
 ## Cross-platform
 

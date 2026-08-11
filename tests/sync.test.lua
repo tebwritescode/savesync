@@ -81,10 +81,22 @@ local function newDevice(name)
       remove = function(p) dev.disk[p] = nil return true end,
       createDirectory = function() return true end,
       getDirectoryItems = function(p)
-        local out = {}
+        -- Immediate children only, same as real love.filesystem -- a leaf
+        -- file returns its own name, but a deeper path (savesync/snapshots
+        -- has a key directory below it, which has the .snap files below
+        -- THAT) has to collapse to just the next segment, or a caller that
+        -- lists the top level to discover subdirectories -- Snapshot.allLocal
+        -- does exactly this -- would always see nothing.
+        local out, seen = {}, {}
+        local prefix = p .. "/"
         for k in pairs(dev.disk) do
-          local rest = k:match("^" .. p:gsub("%p", "%%%0") .. "/([^/]+)$")
-          if rest then out[#out + 1] = rest end
+          if k:sub(1, #prefix) == prefix then
+            local first = k:sub(#prefix + 1):match("^([^/]+)")
+            if first and not seen[first] then
+              seen[first] = true
+              out[#out + 1] = first
+            end
+          end
         end
         table.sort(out)
         return out
@@ -139,6 +151,55 @@ local function newDevice(name)
     get = function() return "red" end,
   }
 
+  -- ---- a fake mod.checkpoints, standing in for the engine's real
+  -- Checkpoint.lua.  `settled` mirrors the engine's settled-overworld gate;
+  -- flipping it is how these tests exercise a refusal without needing a
+  -- real overworld, a real map or a real animation flag to fake one.  The
+  -- identity fields default to matching what `play()` writes below, so a
+  -- device that never touches snapshots at all just carries an unused stub.
+  dev.checkpointState = { settled = true, version = "red",
+    playthroughId = "PLAY0001", badges = 0 }
+  dev.checkpoints = {
+    inspect = function(_, _game)
+      local st = dev.checkpointState
+      if not st.settled then
+        return { canCapture = false, canRestore = false,
+          message = "Close the active menu or screen before creating a checkpoint." }
+      end
+      return { canCapture = true, canRestore = true, kind = "overworld" }
+    end,
+    capture = function(_, _game)
+      local st = dev.checkpointState
+      if not st.settled then
+        return nil, "screen_busy",
+          "Close the active menu or screen before creating a checkpoint."
+      end
+      return {
+        format = 1,
+        kind = "overworld",
+        identity = { engineVersion = "test", gameVersion = st.version,
+          playthroughId = st.playthroughId },
+        save = { badges = st.badges or 0 },
+        runtime = { overworld = { map = "pallet", x = 10, y = 10,
+          facing = "down", surfing = false } },
+      }
+    end,
+    restore = function(_, _game, checkpoint)
+      local st = dev.checkpointState
+      if not st.settled then
+        return false, "screen_busy",
+          "Close the active menu or screen before creating a checkpoint."
+      end
+      if checkpoint.identity.gameVersion ~= st.version
+          or checkpoint.identity.playthroughId ~= st.playthroughId then
+        return false, "wrong_playthrough", "Checkpoint belongs to another playthrough."
+      end
+      st.badges = checkpoint.save.badges
+      dev.restoreCount = (dev.restoreCount or 0) + 1
+      return true
+    end,
+  }
+
   -- ---- a fresh copy of the mod's modules, so each device has its own
   -- module-level state (the config cache in particular)
   dev.cache = {}
@@ -164,6 +225,8 @@ local function activate(dev)
   if not dev.Sync then
     dev.Op = dev.include("src/op.lua")
     dev.Store = dev.include("src/store.lua")
+    dev.Snapshot = dev.include("src/snapshot.lua")
+    dev.Snapshot.bind({ checkpoints = dev.checkpoints })
     dev.Sync = dev.include("src/sync.lua")
     dev.Providers = dev.include("src/providers/init.lua")
     -- Register the fake cloud as a provider on THIS device's registry.
@@ -237,6 +300,15 @@ local function localSave(dev)
   return rec and rec.save or nil
 end
 
+-- Cloud payloads are base64 on the wire (see the blob-encoding note in
+-- sync.lua), so every assertion about what the cloud HOLDS has to decode
+-- first. Going through Sync.decodeBlob rather than a local base64 copy means
+-- these checks also prove the shipping decoder is the inverse of the encoder.
+local function cloudSave(dev, name)
+  activate(dev)
+  return dev.Sync.decodeBlob(cloud.files[name]) or ""
+end
+
 local function cloudKeys()
   local out = {}
   for k in pairs(cloud.files) do out[#out + 1] = k end
@@ -293,7 +365,7 @@ eq("B refuses to guess", sync(B), "conflict")
 eq("B kept its own save untouched", localSave(B).badges, 5)
 eq("A's save is still A's", localSave(A).badges, 3)
 check("the cloud still holds A's version",
-  cloud.files["red-PLAY0001.sav"]:find("3", 1, true) ~= nil)
+  cloudSave(A, "red-PLAY0001.sav"):find("3", 1, true) ~= nil)
 
 -- B refuses again rather than drifting into a decision on a later cycle.
 eq("B stays in conflict", sync(B), "conflict")
@@ -310,11 +382,12 @@ for _ = 1, 200 do
 end
 eq("B resolved", B.Sync.state, "idle")
 check("cloud now holds B's version",
-  cloud.files["red-PLAY0001.sav"]:find("5", 1, true) ~= nil)
+  cloudSave(A, "red-PLAY0001.sav"):find("5", 1, true) ~= nil)
 
 local historyHasA = false
 for name, body in pairs(cloud.files) do
-  if name:match("^red%-PLAY0001%.h%d+%.sav$") and body:find('"badges"%]=3') then
+  if name:match("^red%-PLAY0001%.h%d+%.sav$")
+      and (A.Sync.decodeBlob(body) or ""):find('"badges"%]=3') then
     historyHasA = true
   end
 end
@@ -344,7 +417,7 @@ end
 check("history is bounded", hist <= 10, "kept " .. hist)
 check("current save is still there", cloud.files["red-PLAY0001.sav"] ~= nil)
 check("current save is the latest",
-  cloud.files["red-PLAY0001.sav"]:find('"badges"%]=20') ~= nil)
+  cloudSave(A, "red-PLAY0001.sav"):find('"badges"%]=20') ~= nil)
 eq("and it round-trips to A", localSave(A).badges, 20)
 
 -- 8. Local backups are bounded too, and the newest is first.
@@ -565,6 +638,304 @@ for _ = 1, #Autosave.CHOICES do
 end
 eq("cycling returns to off", seen[#seen], 0)
 check("cycling offers a real interval", seen[1] > 0)
+
+-- ------------------------------------------------------------ snapshots
+--
+-- Snapshots stand in for the engine's mod.checkpoints, faked per device
+-- above (dev.checkpoints / dev.checkpointState).  They are append-only --
+-- see the comment atop sync.lua -- so what needs testing here is different
+-- from the save story: that the timer only fires when the engine allows it,
+-- that the two auto timers default to opposite states for opposite reasons,
+-- that a snapshot's cloud name survives the self-hosted server's own name
+-- rule, that snapshots propagate device to device, that pruning caps at
+-- ten on both sides, and that restoring one is itself undoable.
+
+-- 12. A SNAPSHOT IS TAKEN WHEN DUE, AND NOT WHEN THE ENGINE REFUSES.
+local E = newDevice("Device E")
+activate(E)
+
+local okName, okKey = E.Snapshot.take(nil, "manual")
+check("a snapshot is taken when the engine allows it", okName ~= nil, okKey)
+eq("its key is version + playthrough, same shape saves use", okKey, "red-PLAY0001")
+
+E.checkpointState.settled = false
+local refusedName, refusedMsg = E.Snapshot.take(nil, "manual")
+check("no snapshot when the engine refuses", refusedName == nil)
+eq("the engine's own refusal message passes through verbatim", refusedMsg,
+  "Close the active menu or screen before creating a checkpoint.")
+E.checkpointState.settled = true
+
+-- 13. THE TWO AUTO TIMERS, AND THE TIMER-LEVEL REFUSAL/DEFERRAL.
+local Autosave2 = E.include("src/autosave.lua")
+eq("auto snapshot defaults to 5", Autosave2.snapshotMinutes(), 5)
+eq("auto snapshot label reads 5 min", Autosave2.snapshotLabel(), "5 min")
+eq("auto save-file still defaults to 0", Autosave2.minutes(), 0)
+eq("auto save-file label still reads OFF", Autosave2.label(), "OFF")
+
+local fakeSnapNow = 500000
+_G.love.timer.getTime = function() return fakeSnapNow end
+Autosave2.setSnapshotMinutes(5)   -- lastSnapshotAt = fakeSnapNow, from here
+
+local key13 = "red-PLAY0001"
+local before13 = #E.Snapshot.list(key13)
+Autosave2.update({})
+eq("no snapshot before the interval is up", #E.Snapshot.list(key13), before13)
+
+fakeSnapNow = fakeSnapNow + 301        -- 5 min 1 s later: due
+E.checkpointState.settled = false
+Autosave2.update({})
+eq("a due snapshot waits while the engine refuses",
+  #E.Snapshot.list(key13), before13)
+
+E.checkpointState.settled = true
+Autosave2.update({})
+eq("the deferred snapshot lands once the engine allows it",
+  #E.Snapshot.list(key13), before13 + 1)
+
+Autosave2.update({})
+eq("and does not immediately fire again", #E.Snapshot.list(key13), before13 + 1)
+
+-- A capture failure (not just "not settled yet") is a veto too, and backs
+-- off instead of retrying every frame -- same reasoning as the save-file
+-- veto in section 11, exercised here for the second timer.
+local realCapture = E.checkpoints.capture
+E.checkpoints.capture = function() return nil, "capture_failed", "boom" end
+fakeSnapNow = fakeSnapNow + 301
+Autosave2.update({})
+local afterFirstFail = #E.Snapshot.list(key13)
+eq("a capture failure writes nothing", afterFirstFail, before13 + 1)
+for _ = 1, 20 do Autosave2.update({}) end
+eq("and backs off instead of spinning", #E.Snapshot.list(key13), afterFirstFail)
+E.checkpoints.capture = realCapture
+
+-- 14 & 15. CLOUD NAMES, AND PROPAGATION DEVICE A -> CLOUD -> DEVICE B.
+--
+-- No conflict handling needed for any of this -- see the comment atop
+-- sync.lua -- so this checks that the files actually MOVE: what E holds
+-- locally reaches the cloud under a name the self-hosted server's own
+-- validator accepts, and a device that has never seen them adopts every one.
+
+-- Mirrors server/server.js's NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+-- plus its explicit rejection of "..".  Re-implemented here, not imported,
+-- so a mismatch on EITHER side of the wire fails this test, not just a typo
+-- both sides happen to share.
+local function validCloudName(name)
+  if type(name) ~= "string" or name == "" or #name > 128 then return false end
+  if not name:match("^%w") then return false end
+  if name:find("%.%.", 1, true) then return false end
+  return name:match("^[%w][%w%._%-]*$") == name
+end
+
+-- The precise shape sync.lua's snapCloudName/parseSnapName agree on for
+-- key13, not just "starts with the key plus .s" -- the shared cloud already
+-- holds "red-PLAY0001.sav" from the save story earlier in this file, and
+-- that name starts with "red-PLAY0001.s" too.
+local function isKey13Snapshot(name)
+  return name:match("^red%-PLAY0001%.s%d+%-%d+%-%x+%.snap$") ~= nil
+end
+
+activate(E)
+local eSnapsBefore = E.Snapshot.list(key13)
+check("device E has snapshots to sync", #eSnapsBefore > 0)
+eq("device E syncs cleanly", sync(E), "idle")
+
+local snapCloudCount = 0
+for name in pairs(cloud.files) do
+  if isKey13Snapshot(name) then snapCloudCount = snapCloudCount + 1 end
+end
+eq("every local snapshot reached the cloud", snapCloudCount, #eSnapsBefore)
+
+local sawSnapName = false
+for name in pairs(cloud.files) do
+  if name:find("%.snap$") then
+    sawSnapName = true
+    check("snapshot cloud name matches the server's validator: " .. name,
+      validCloudName(name))
+  end
+end
+check("at least one snapshot cloud name was checked", sawSnapName)
+
+local F = newDevice("Device F")
+activate(F)
+eq("device F syncs cleanly", sync(F), "idle")
+local fSnaps = F.Snapshot.list(key13)
+eq("device F adopted every snapshot", #fSnaps, #eSnapsBefore)
+
+-- 16. PRUNING KEEPS THE NEWEST TEN, LOCALLY AND IN THE CLOUD.
+--
+-- A device and a playthrough id of its own: key13 already carries the
+-- handful of snapshots section 17 below depends on still being present, and
+-- names taken within the same wall-clock second sort by hash, not by true
+-- creation order (see snapshot.lua's own comment on why the hash is there),
+-- so hammering key13 with fifteen more here could evict one of those on
+-- nothing more than a tie-break.  A fresh key sidesteps the question.
+local G = newDevice("Device G")
+activate(G)
+G.checkpointState.playthroughId = "PLAYPRUNE"
+local keyPrune = "red-PLAYPRUNE"
+local function isPruneSnapshot(name)
+  return name:match("^red%-PLAYPRUNE%.s%d+%-%d+%-%x+%.snap$") ~= nil
+end
+
+-- Sync after EVERY take, not once at the end.  Local pruning caps the disk
+-- at ten regardless, so a single sync at the end would only ever have ten
+-- files to offer and would pass even with cloud-side pruning deleted
+-- outright.  Syncing every time is what makes the cloud accumulate past ten
+-- unless ITS OWN prune (the thing actually under test here) trims it back.
+local lastSyncState
+for i = 1, 15 do
+  G.checkpointState.badges = 100 + i    -- distinct content each time, so
+  G.Snapshot.take(nil, "manual")        -- rapid calls do not collide on name
+  lastSyncState = sync(G)
+end
+eq("every incremental sync stayed clean", lastSyncState, "idle")
+local localCount16 = #G.Snapshot.list(keyPrune)
+check("local snapshots are capped at ten", localCount16 <= 10,
+  "kept " .. localCount16)
+
+local cloudCount16 = 0
+for name in pairs(cloud.files) do
+  if isPruneSnapshot(name) then cloudCount16 = cloudCount16 + 1 end
+end
+check("cloud snapshots are capped at ten too", cloudCount16 <= 10,
+  "kept " .. cloudCount16)
+
+-- 17. RESTORING A SNAPSHOT TAKES A RECOVERY ONE FIRST.
+--
+-- snapshot.lua's own comment says why: Checkpoint.restore rolls back in
+-- memory on failure, but a caller wanting durable crash recovery has to
+-- capture its own -- so Snapshot.restore does, unconditionally, before it
+-- ever asks the engine to restore anything.  The engine side is a fake
+-- here; what is under test is that Snapshot.restore's own ordering holds.
+activate(E)
+E.checkpointState.badges = 777
+local marked = E.Snapshot.take(nil, "manual")
+check("a marker snapshot exists to restore", marked ~= nil)
+
+E.checkpointState.badges = 888   -- distinct, so the recovery capture cannot
+                                  -- be mistaken for one already on disk
+local ok17, err17 = E.Snapshot.restore(nil, key13, marked)
+check("restore reports success", ok17, err17)
+
+local sawRecovery = false
+for _, row in ipairs(E.Snapshot.list(key13)) do
+  local rec = E.Snapshot.decode(E.Snapshot.readRaw(key13, row.name))
+  if rec and rec.tag == "undo" and rec.checkpoint.save.badges == 888 then
+    sawRecovery = true
+  end
+end
+check("a recovery snapshot (tagged 'undo') was taken before restoring",
+  sawRecovery)
+
+-- Even a restore the engine itself refuses still leaves that recovery
+-- snapshot behind -- Snapshot.take happens unconditionally before the
+-- engine is ever asked, not only when the engine is about to say yes.
+local realRestore = E.checkpoints.restore
+E.checkpoints.restore = function() return false, "restore_failed", "no." end
+E.checkpointState.badges = 999
+local okFail, errFail = E.Snapshot.restore(nil, key13, marked)
+check("a restore the engine refuses reports failure", okFail == false)
+eq("with the engine's own message", errFail, "no.")
+local sawFailRecovery = false
+for _, row in ipairs(E.Snapshot.list(key13)) do
+  local rec = E.Snapshot.decode(E.Snapshot.readRaw(key13, row.name))
+  if rec and rec.tag == "undo" and rec.checkpoint.save.badges == 999 then
+    sawFailRecovery = true
+  end
+end
+check("a recovery snapshot was captured even though the restore failed",
+  sawFailRecovery)
+E.checkpoints.restore = realRestore
+
+-- --------------------------------------------------------------- wrap
+--
+-- Util.wrap is what stands between a long engine or provider message and a
+-- player who cannot read it -- see mod/src/ui.lua's file header.  Tested
+-- directly here because ui.lua itself needs real font sheets to render.
+
+activate(A)
+local Util = A.include("src/util.lua")
+
+eq("wrap: short text is one line", #Util.wrap("hello", 19), 1)
+eq("wrap: lossless when it fits on one line", Util.wrap("hello", 19)[1], "hello")
+
+local longText = "the quick brown fox jumps over the lazy dog"
+local wrapped = Util.wrap(longText, 10)
+local widest = 0
+for _, line in ipairs(wrapped) do widest = math.max(widest, #line) end
+check("wrap: never exceeds the requested width", widest <= 10, widest)
+eq("wrap: lossless when rejoined", table.concat(wrapped, " "), longText)
+
+local oneLongWord = "supercalifragilisticexpialidocious"
+local brokenWord = Util.wrap(oneLongWord, 10)
+check("wrap: a single over-long word is hard-broken, not left overflowing",
+  #brokenWord > 1)
+local widestWord = 0
+for _, line in ipairs(brokenWord) do widestWord = math.max(widestWord, #line) end
+check("wrap: hard-broken chunks still respect the width", widestWord <= 10,
+  widestWord)
+eq("wrap: hard-broken chunks rejoin losslessly", table.concat(brokenWord), oneLongWord)
+
+eq("wrap: empty text wraps to one empty line", #Util.wrap("", 19), 1)
+eq("wrap: whitespace-only text wraps to one empty line", #Util.wrap("   ", 19), 1)
+
+-- 12. BINARY SAFETY.
+--
+-- A save is a byte string: the engine's %q serialiser passes bytes >= 0x80
+-- through raw, so save.lua need not be valid UTF-8. Every fixture in this
+-- file used to be pure ASCII, which is exactly why the wire format could be
+-- binary-unsafe for months and every test still passed -- while the first
+-- real install got `400 Problems parsing JSON` from GitHub and uploaded
+-- nothing. These bytes are the hostile ones: a lone 0xE9 (invalid UTF-8 on
+-- its own), a valid multi-byte sequence, NUL, DEL, 0xFF, and the characters
+-- JSON itself cares about.
+local HOSTILE = "name=" .. string.char(233) .. " lone-high "
+  .. string.char(194, 165) .. " yen " .. string.char(0) .. " nul "
+  .. string.char(127) .. " del " .. string.char(255) .. " ff "
+  .. string.char(34) .. "quote" .. string.char(34) .. " "
+  .. string.char(92) .. " backslash " .. string.char(10) .. string.char(9)
+
+activate(A)
+local enc = A.Sync.encodeBlob(HOSTILE)
+eq("blob encoding is ASCII-safe", enc:find("[\128-\255]"), nil)
+check("blob encoding is self-describing", enc:sub(1, 4) == "b64:")
+eq("blob round-trips byte-identically", A.Sync.decodeBlob(enc), HOSTILE)
+eq("blob length survives", #A.Sync.decodeBlob(enc), #HOSTILE)
+
+-- An object written before the prefix existed must still read back, or a
+-- history entry from an older build becomes unrecoverable.
+eq("legacy raw payloads still decode", A.Sync.decodeBlob("return {}"), "return {}")
+
+-- And the whole way through: a save carrying those bytes must reach another
+-- device unchanged, hash included.
+local E = newDevice("Device E")
+local F = newDevice("Device F")
+play(E, { version = "red", player = { name = "RED" }, badges = 1, junk = HOSTILE,
+          meta = { playthroughId = "PLAYBIN1", savedAt = 1000 } })
+eq("E uploads a binary-laden save", sync(E), "idle")
+eq("F adopts it", sync(F), "idle")
+
+activate(E)
+local eRec = E.Store.readSlot("red", E.saveData.activeSlot())
+activate(F)
+local fRec
+for _, sl in ipairs(F.saveData.listSlots("red")) do
+  local r = F.Store.readSlot("red", sl.id)
+  if r and r.key == "red-PLAYBIN1" then fRec = r end
+end
+check("F received the binary save", fRec ~= nil)
+if fRec and eRec then
+  eq("bytes survived the round trip", fRec.bytes, eRec.bytes)
+  eq("hash agrees on both devices", fRec.hash, eRec.hash)
+  eq("the hostile bytes are intact", fRec.save.junk, HOSTILE)
+end
+
+-- Nothing binary may reach the wire, whatever the save contains.
+for name, body in pairs(cloud.files) do
+  if name:match("^red%-PLAYBIN1%.") and not name:match("%.json$") then
+    eq("cloud object is ASCII: " .. name, body:find("[\128-\255]"), nil)
+  end
+end
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

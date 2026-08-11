@@ -32,8 +32,15 @@ local Json = SAVESYNC_INCLUDE("src/json.lua")
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Http = SAVESYNC_INCLUDE("src/http.lua")
+local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 local installScreen = SAVESYNC_INCLUDE("src/ui.lua")
+
+-- Hand the engine's checkpoint API to the snapshot module.  `mod.checkpoints`
+-- is absent on an engine build predating it, and Snapshot.bind copes with a
+-- nil just fine -- Snapshot.available() then answers false everywhere else,
+-- which is what hides every snapshot row and pump instead of erroring.
+Snapshot.bind(mod)
 
 -- OAuth client ids.  These are PUBLIC values (the device flow and PKCE exist
 -- precisely so a client needs no secret), they differ per distribution, and a

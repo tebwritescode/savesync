@@ -159,6 +159,24 @@ async function waitForServer(deadlineMs = 10000) {
     });
     eq('oversized file rejected', huge.status, 413);
 
+    // ---- invalid UTF-8 must be REFUSED, never silently repaired.
+    // Node's lenient decoder turns a bad byte into U+FFFD, which would store a
+    // corrupted save and report success -- the worst outcome for a backup.
+    {
+      const bad = Buffer.concat([
+        Buffer.from('{"files":{"utf8.sav":"x'), Buffer.from([0xE9]),
+        Buffer.from('y"}}'),
+      ]);
+      const res = await fetch(BASE + '/v1/batch', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+        body: bad,
+      });
+      eq('invalid utf-8 is rejected', res.status, 400);
+      eq('and nothing was stored',
+        (await req('GET', '/v1/file/utf8.sav')).status, 404);
+    }
+
     // ---- malformed input
     eq('bad json rejected',
       (await req('POST', '/v1/batch', { body: '{nope' })).status, 400);

@@ -34,12 +34,32 @@ P.needsClientId = true
 local MARKER = "gen1recomp SaveSync (do not rename)"
 
 local API = "https://api.github.com"
+local WEB = "https://github.com"
 local UA = "gen1recomp-savesync"
 
+-- TEST SEAM.  GitHub has no sandbox a mod can point at, and the one bug that
+-- has actually reached a player here (a gist created with only the
+-- link-time README, no save ever arriving) was invisible precisely because
+-- nothing exercised this file against a real server.  `cfg.apiBase` /
+-- `cfg.webBase` let a test substitute a fake one; a real cfg never has these
+-- fields, `apiBase()`/`webBase()` fall back to the real endpoints, and
+-- nothing a player does can set them, so this changes nothing for anyone
+-- signed in for real.
+local function apiBase(cfg) return (cfg and cfg.apiBase) or API end
+local function webBase(cfg) return (cfg and cfg.webBase) or WEB end
+
+-- Content-Type MUST be explicit.  curl defaults an unlabelled body to
+-- application/x-www-form-urlencoded, and every call below sends
+-- Json.encode()'d text -- so leaving this out means GitHub receives JSON
+-- wearing a form-data label on every gist create/update.  That mismatch was
+-- caught by the harness in tests/github.test.js, which is also the only
+-- place able to catch it: it needs a real Content-Type header to inspect,
+-- which nothing short of an actual HTTP request produces.
 local function apiHeaders(token)
   return {
     ["Authorization"] = "Bearer " .. token,
     ["Accept"] = "application/vnd.github+json",
+    ["Content-Type"] = "application/json",
     ["X-GitHub-Api-Version"] = "2022-11-28",
     ["User-Agent"] = UA,
   }
@@ -58,6 +78,11 @@ end
 --- message are written into it as they become known.
 function P.link(state, opts)
   local clientId = opts and opts.clientId
+  -- Read once up front: opts is only around for this call, but the chosen
+  -- base has to keep working for every P.read/write/list this cfg ever
+  -- makes, so it travels onward inside the returned cfg instead.
+  local web = webBase(opts)
+  local api = apiBase(opts)
   return Op.new(function(ctx)
     if not clientId or clientId == "" then
       return ctx:fail("no GitHub client id is configured (see docs/providers.md)")
@@ -66,7 +91,7 @@ function P.link(state, opts)
     state.message = "Asking GitHub for a code..."
     local res = ctx:http({
       method = "POST",
-      url = "https://github.com/login/device/code",
+      url = web .. "/login/device/code",
       headers = { ["Accept"] = "application/json", ["User-Agent"] = UA },
       body = Util.form({ client_id = clientId, scope = "gist" }),
     })
@@ -90,7 +115,7 @@ function P.link(state, opts)
       ctx:sleep(interval)
       local tr = ctx:http({
         method = "POST",
-        url = "https://github.com/login/oauth/access_token",
+        url = web .. "/login/oauth/access_token",
         headers = { ["Accept"] = "application/json", ["User-Agent"] = UA },
         body = Util.form({
           client_id = clientId,
@@ -118,7 +143,7 @@ function P.link(state, opts)
     state.userCode = nil
     state.message = "Signed in. Finding your save storage..."
 
-    local who = ctx:http({ url = API .. "/user", headers = apiHeaders(token) })
+    local who = ctx:http({ url = api .. "/user", headers = apiHeaders(token) })
     if not who.ok or who.code ~= 200 then
       return ctx:fail("signed in, but GitHub would not say who you are")
     end
@@ -130,7 +155,7 @@ function P.link(state, opts)
     local page = 1
     while page <= 5 and not gistId do
       local ls = ctx:http({
-        url = API .. "/gists?per_page=100&page=" .. page,
+        url = api .. "/gists?per_page=100&page=" .. page,
         headers = apiHeaders(token),
       })
       if not ls.ok or ls.code ~= 200 then break end
@@ -156,7 +181,7 @@ function P.link(state, opts)
         },
       })
       local cr = ctx:http({
-        method = "POST", url = API .. "/gists",
+        method = "POST", url = api .. "/gists",
         headers = apiHeaders(token), body = body,
       })
       if not cr.ok or (cr.code ~= 201 and cr.code ~= 200) then
@@ -172,6 +197,10 @@ function P.link(state, opts)
       token = token,
       gist = gistId,
       account = login,
+      -- nil on a real sign-in (api/web already equal the real constants), so
+      -- this adds nothing to a player's saved config.
+      apiBase = api ~= API and api or nil,
+      webBase = web ~= WEB and web or nil,
     }
   end)
 end
@@ -192,7 +221,7 @@ end
 
 local function fetchGist(ctx, cfg)
   local res = ctx:http({
-    url = API .. "/gists/" .. cfg.gist,
+    url = apiBase(cfg) .. "/gists/" .. cfg.gist,
     headers = apiHeaders(cfg.token),
   })
   if not res.ok then return nil, res.err or "no connection" end
@@ -276,7 +305,7 @@ function P.write(cfg, files)
 
     local res = ctx:http({
       method = "PATCH",
-      url = API .. "/gists/" .. cfg.gist,
+      url = apiBase(cfg) .. "/gists/" .. cfg.gist,
       headers = apiHeaders(cfg.token),
       body = body,
     })

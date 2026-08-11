@@ -209,4 +209,42 @@ function Util.parseForm(s)
   return out
 end
 
+-- ------------------------------------------------------------------ text
+
+--- Word-wrap `text` to `width` columns, wrapping on spaces.  A single word
+--- longer than `width` is hard-broken into width-sized chunks rather than
+--- left to overflow -- a raw URL or an unbroken provider error id still has
+--- to fit inside the same fixed-width box everything else does.
+---
+--- This only wraps; it does not cap line count or add an ellipsis.  A caller
+--- with a fixed number of screen rows to fill (the UI) owns that decision,
+--- because how much a truncated message costs depends on where it is going,
+--- not on how wrapping works.
+function Util.wrap(text, width)
+  text = tostring(text or "")
+  width = tonumber(width) or 19
+  if width < 1 then width = 1 end
+
+  local lines = {}
+  local line = ""
+  for word in text:gmatch("%S+") do
+    while #word > width do
+      if line ~= "" then lines[#lines + 1] = line line = "" end
+      lines[#lines + 1] = word:sub(1, width)
+      word = word:sub(width + 1)
+    end
+    if line == "" then
+      line = word
+    elseif #line + 1 + #word <= width then
+      line = line .. " " .. word
+    else
+      lines[#lines + 1] = line
+      line = word
+    end
+  end
+  if line ~= "" then lines[#lines + 1] = line end
+  if #lines == 0 then lines = { "" } end
+  return lines
+end
+
 return Util

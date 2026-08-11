@@ -24,11 +24,22 @@
 -- ONLY SAVES GO UP.  The upload set is built from Store.readAllLocal(),
 -- which reads the engine's save slots and nothing else.  ROM data, the ROM
 -- cache, assets and this mod's own config are not reachable from here.
+--
+-- SNAPSHOTS GET NONE OF THE ABOVE.  A snapshot (src/snapshot.lua) is
+-- immutable once written -- taking one never edits an existing file, only
+-- adds a new one -- so two devices can only ever ADD different snapshots,
+-- never disagree about one.  There is nothing for the three-hash rule to
+-- protect against, so the snapshot half of a cycle below is just "make both
+-- sides hold the union of what exists, newest ten kept on each."  Cloud
+-- names are "<key>.s<local-filename>", <local-filename> being exactly what
+-- Snapshot.take() already wrote to disk -- no separate id to invent or keep
+-- in step between the two.
 
 local Op = SAVESYNC_INCLUDE("src/op.lua")
 local Json = SAVESYNC_INCLUDE("src/json.lua")
 local Util = SAVESYNC_INCLUDE("src/util.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
+local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
 
 local Sync = {}
@@ -36,6 +47,10 @@ local Sync = {}
 -- How many past versions of each save the cloud keeps.  The data is tiny, so
 -- this is bounded by tidiness rather than by cost.
 local KEEP_HISTORY = 10
+
+-- Same cap for snapshots, on both sides -- see the comment atop this file
+-- for why they need no conflict handling to get there.
+local SNAPSHOT_KEEP = 10
 
 -- Debounce after an in-game save: the player may be about to save again
 -- (Poké Center, then straight back out), and one upload for the pair is
@@ -67,6 +82,41 @@ local retryAt = 0
 -- out at the next SAVE, silently undoing the download.
 Sync.canApplyDownload = function() return true end
 
+-- ------------------------------------------------------- blob encoding
+
+-- A SAVE IS BYTES, NOT TEXT, AND THE WIRE IS JSON.
+--
+-- The engine serialises saves with Lua's `%q`, which passes bytes >= 0x80
+-- through raw -- so save.lua is a byte string that need not be valid UTF-8.
+-- Putting those bytes straight into a JSON body is what broke the first real
+-- install: GitHub answered `400 {"message":"Problems parsing JSON"}` and no
+-- save ever uploaded.  The self-hosted server was worse -- Node's
+-- toString('utf8') turns an invalid byte into U+FFFD, so it would have
+-- CORRUPTED the save silently instead of refusing it.
+--
+-- So payloads are base64 on the wire, behind a self-describing prefix: it
+-- needs no manifest flag, and an object written by an older build (raw) is
+-- still readable, which matters because history entries outlive the code that
+-- wrote them.  Manifests are excluded -- this mod generates them, they are
+-- ASCII by construction, and leaving them plain keeps a gist readable by a
+-- human who wants to see what happened.
+local BLOB_PREFIX = "b64:"
+
+local function encodeBlob(bytes)
+  return BLOB_PREFIX .. Util.b64(bytes)
+end
+
+local function decodeBlob(text)
+  if type(text) ~= "string" or text == "" then return nil end
+  if text:sub(1, #BLOB_PREFIX) == BLOB_PREFIX then
+    return Util.unb64(text:sub(#BLOB_PREFIX + 1))
+  end
+  return text                 -- legacy object, written before the prefix
+end
+
+-- Exposed for tests: the round trip is the whole safety property here.
+Sync.encodeBlob, Sync.decodeBlob = encodeBlob, decodeBlob
+
 -- ------------------------------------------------------------ names
 
 local function savName(key) return key .. ".sav" end
@@ -76,6 +126,21 @@ local function histName(key, seq) return ("%s.h%04d.sav"):format(key, seq) end
 local function parseHist(name)
   local key, seq = name:match("^(.+)%.h(%d+)%.sav$")
   return key, tonumber(seq)
+end
+
+-- Cloud object name for a snapshot: "<key>.s<local-name>".  <local-name> is
+-- exactly the filename Snapshot.take() wrote to disk -- a stamp plus a short
+-- content hash, see snapshot.lua -- and the "s" marks it apart from the
+-- h0001-style save-history entries above so the two never collide.
+local function snapCloudName(key, localName) return key .. ".s" .. localName end
+
+-- The inverse.  Matched against the fixed shape Snapshot.take() produces
+-- (an 8-digit date, a dash, a 6-digit time, a dash, an 8-hex-digit short
+-- hash, ".snap") rather than split on the LAST ".s", because a playthrough
+-- id is free to contain characters that would make a positional split
+-- ambiguous.
+local function parseSnapName(name)
+  return name:match("^(.+)%.s(%d+%-%d+%-%x+%.snap)$")
 end
 
 -- ------------------------------------------------------------ config
@@ -135,9 +200,9 @@ end
 --- the prune of anything past KEEP_HISTORY.
 local function uploadFiles(rec, seq, parent, existingNames)
   local files = {}
-  files[savName(rec.key)] = rec.bytes
+  files[savName(rec.key)] = encodeBlob(rec.bytes)
   files[jsonName(rec.key)] = Json.encode(manifestFor(rec, seq, parent))
-  files[histName(rec.key, seq)] = rec.bytes
+  files[histName(rec.key, seq)] = encodeBlob(rec.bytes)
 
   local seqs = {}
   for name in pairs(existingNames or {}) do
@@ -253,6 +318,78 @@ function Sync.cycle(opts)
       end
     end
 
+    -- ---- snapshots: no decision table, just "union, newest ten kept".  See
+    -- the comment at the top of this file for why that is enough.  Uploads
+    -- and deletes are merged into the SAME `uploads` batch the save logic
+    -- above already builds, so a provider that can do a whole cycle in one
+    -- request still only sends one; downloads are read separately below
+    -- because they need their own bytes back, not a write confirmation.
+    local localSnaps = Snapshot.allLocal()
+    local cloudSnaps = {}                 -- key -> { local-name -> cloud-name }
+    for cloudName in pairs(names) do
+      local skey, sname = parseSnapName(cloudName)
+      if skey then
+        cloudSnaps[skey] = cloudSnaps[skey] or {}
+        cloudSnaps[skey][sname] = cloudName
+      end
+    end
+    local snapKeys = {}
+    for key in pairs(localSnaps) do snapKeys[key] = true end
+    for key in pairs(cloudSnaps) do snapKeys[key] = true end
+
+    local snapDownloads = {}   -- { key, name, cloudName }
+    for key in pairs(snapKeys) do
+      local local_ = localSnaps[key] or {}
+      local cloud_ = cloudSnaps[key] or {}
+      -- Newest ten across BOTH sides, not just one -- a device that has been
+      -- offline a while must not have its own cloud copy deleted out from
+      -- under it just because THIS device already pruned its local one, and
+      -- the cloud must not keep a name every device has independently moved
+      -- past.
+      local union, seen = {}, {}
+      for n in pairs(local_) do seen[n] = true union[#union + 1] = n end
+      for n in pairs(cloud_) do
+        if not seen[n] then seen[n] = true union[#union + 1] = n end
+      end
+      table.sort(union)   -- the stamp sorts lexicographically = chronologically
+      local keep = {}
+      for i = math.max(1, #union - SNAPSHOT_KEEP + 1), #union do
+        keep[union[i]] = true
+      end
+      for _, sname in ipairs(union) do
+        local hasLocal, hasCloud = local_[sname] ~= nil, cloud_[sname] ~= nil
+        if keep[sname] then
+          if hasLocal and not hasCloud then
+            uploads[snapCloudName(key, sname)] = encodeBlob(local_[sname])
+            report.snapshotsUploaded = (report.snapshotsUploaded or 0) + 1
+          elseif hasCloud and not hasLocal then
+            snapDownloads[#snapDownloads + 1] =
+              { key = key, name = sname, cloudName = cloud_[sname] }
+          end
+        elseif hasCloud then
+          -- Fell out of the newest ten: prune the cloud copy.  The local
+          -- side needs no matching delete here -- Snapshot.prune already
+          -- caps the disk at ten and runs on every capture and download, so
+          -- a name this stale is already gone from there or on its way out.
+          uploads[snapCloudName(key, sname)] = false
+        end
+      end
+    end
+
+    if #snapDownloads > 0 then
+      local wantSnap = {}
+      for _, d in ipairs(snapDownloads) do wantSnap[#wantSnap + 1] = d.cloudName end
+      local blobs = ctx:await(provider.read(conf.cfg, wantSnap))
+      persistProviderConfig()
+      for _, d in ipairs(snapDownloads) do
+        local raw = decodeBlob(blobs[d.cloudName])
+        if type(raw) == "string" and raw ~= ""
+            and Snapshot.writeRaw(d.key, d.name, raw) then
+          report.snapshotsDownloaded = (report.snapshotsDownloaded or 0) + 1
+        end
+      end
+    end
+
     -- ---- downloads first: a device that is behind should catch up before
     -- it publishes anything, so a half-finished cycle never makes it the
     -- authority on a save it has not seen.
@@ -268,7 +405,7 @@ function Sync.cycle(opts)
         local blobs = ctx:await(provider.read(conf.cfg, wantSav))
         persistProviderConfig()
         for key, cloud in pairs(downloads) do
-          local bytes = blobs[savName(key)]
+          local bytes = decodeBlob(blobs[savName(key)])
           local version = Store.versionOfKey(key)
           if type(bytes) == "string" and bytes ~= "" then
             if Util.hash(bytes) ~= cloud.hash then
@@ -345,7 +482,7 @@ function Sync.resolveUseCloud(key)
   return Op.new(function(ctx)
     local blobs = ctx:await(provider.read(conf.cfg, { savName(key) }))
     persistProviderConfig()
-    local bytes = blobs[savName(key)]
+    local bytes = decodeBlob(blobs[savName(key)])
     if type(bytes) ~= "string" or bytes == "" then
       return ctx:fail("the cloud copy has gone missing")
     end
@@ -389,7 +526,7 @@ function Sync.restoreHistory(key, name)
   return Op.new(function(ctx)
     local blobs = ctx:await(provider.read(conf.cfg, { name }))
     persistProviderConfig()
-    local bytes = blobs[name]
+    local bytes = decodeBlob(blobs[name])
     if type(bytes) ~= "string" or bytes == "" then
       return ctx:fail("that version is gone")
     end

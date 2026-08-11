@@ -6,16 +6,26 @@
 --     SAVESYNC
 --     Connected
 --     Last synced: just now
---     Sync Now / Pair Another Device / Restore Previous Save
+--     Sync Now / Pair Device / Restore Old Save
 --
--- Everything else -- providers, device codes, conflicts, history -- is a view
--- the player is taken to only when they ask for it, or when something has
--- gone wrong and a decision is genuinely theirs to make.
+-- Everything else -- providers, device codes, conflicts, history, snapshots
+-- -- is a view the player is taken to only when they ask for it, or when
+-- something has gone wrong and a decision is genuinely theirs to make.
 --
 -- Drawn with the confirmed mod toolkit only (mod.ui.Font + game.input), the
 -- same surfaces the engine's own menus use.  The Gen 1 charmap has no ">",
--- "_" or check-mark tile, so the cursor is the vanilla filled arrow
--- (Theme.cursor) and the "connected" tick is drawn as three rectangles.
+-- "_", "*" or check-mark tile, so the cursor is the vanilla filled arrow
+-- (Theme.cursor), the "connected" tick is drawn as three rectangles, and
+-- overflow is a plain "..." rather than an ellipsis glyph.
+--
+-- TWO KINDS OF TEXT, TWO RULES.  Menu row labels are single-line and never
+-- wrap -- every one of them is a fixed string chosen to fit inside roughly
+-- 17 characters, with :sub() kept only as a last-resort safety net, never as
+-- the plan.  Status lines and player-facing messages are the opposite: they
+-- can carry arbitrary text from the engine or a provider (an OAuth error, an
+-- HTTP status line), so they run through Util.wrap and get several rows to
+-- land in instead of being cut at a fixed column -- a player who cannot read
+-- an error cannot act on it.
 
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
@@ -23,8 +33,10 @@ local Pairing = SAVESYNC_INCLUDE("src/pairing.lua")
 local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
 local Util = SAVESYNC_INCLUDE("src/util.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
+local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 
 local VISIBLE = 7            -- menu rows that fit between title and footer
+local WRAP_WIDTH = 19        -- columns available to text starting at x=8
 
 return function(mod, cfgOpts)
   mod.content.screens:register("SaveSync", {
@@ -40,12 +52,33 @@ return function(mod, cfgOpts)
       self.message = nil          -- one-line feedback under the title
       self.link = nil             -- live link state during Set Up
       self.linkOp = nil
-      self.list = nil             -- rows for restore/history views
+      self.list = nil             -- rows for restore/history/snapshot views
       self.pendingRestore = nil
+      self.pendingSnapRestore = nil
 
       -- ------------------------------------------------------- helpers
 
       local function say(msg) self.message = msg end
+
+      -- Word-wrap `text` and draw up to `maxLines` of it starting at
+      -- (x, y), returning the y position just past what was drawn.  If the
+      -- text still does not fit in that many lines, the LAST one is cut to
+      -- make room for "..." -- the one place a truncation is acceptable,
+      -- because there is nowhere left on a 160x144 screen to put the rest.
+      local function drawWrapped(x, y, text, maxLines)
+        if not text or text == "" then return y end
+        local lines = Util.wrap(text, WRAP_WIDTH)
+        local shown = math.min(#lines, maxLines)
+        for i = 1, shown do
+          local line = lines[i]
+          if i == shown and shown < #lines then
+            line = line:sub(1, math.max(0, WRAP_WIDTH - 3)) .. "..."
+          end
+          Font.draw(line, x, y)
+          y = y + 12
+        end
+        return y
+      end
 
       local function clipboardGet()
         local ok, text = pcall(function()
@@ -92,8 +125,8 @@ return function(mod, cfgOpts)
 
       -- Auto save has nothing to do with the cloud -- it is worth having on a
       -- machine that will never be set up -- so its row appears whether or
-      -- not a provider is connected, and Restore Previous Save comes with it
-      -- (an autosave is only safe to offer if it is undoable).
+      -- not a provider is connected, and Restore Old Save comes with it (an
+      -- autosave is only safe to offer if it is undoable).
       local function autosaveRow()
         return { "Auto save: " .. Autosave.label(), function()
           Autosave.cycle()
@@ -105,12 +138,67 @@ return function(mod, cfgOpts)
         end }
       end
 
+      -- Snapshots sit next to auto save for the same reason: they work with
+      -- no cloud connected, so they belong above the line where a provider
+      -- decides what the rest of the menu even shows.  Hidden entirely on an
+      -- engine build with no checkpoint support -- Snapshot.available()
+      -- already answers that question, so nothing here re-derives it.
+      local function snapshotRows()
+        if not Snapshot.available() then return {} end
+        local rows = {}
+        rows[#rows + 1] = { "Auto snap: " .. Autosave.snapshotLabel(), function()
+          Autosave.cycleSnapshot()
+          if Autosave.snapshotMinutes() > 0 then
+            say("Snapshots every " .. Autosave.snapshotLabel() .. ".")
+          else
+            say("Auto snapshot off.")
+          end
+        end }
+        rows[#rows + 1] = { "Take Snapshot", function()
+          local name, err = Snapshot.take(self.game, "manual")
+          if name then
+            Autosave.noteSnapshotTaken()
+            say("Snapshot saved.")
+          else
+            -- The engine's own refusal, verbatim -- it explains exactly why
+            -- ("Close the active menu or screen..."), and inventing a worse
+            -- one here would only make the player guess.
+            say(err or "could not snapshot")
+          end
+        end }
+        rows[#rows + 1] = { "Restore Snapshot", function()
+          local cap = Snapshot.inspect(self.game)
+          if not cap.canRestore then
+            say(cap.message or "cannot restore right now")
+            return
+          end
+          local save = self.game and self.game.save
+          local key = save and Snapshot.keyFor({ identity = {
+            gameVersion = save.version,
+            playthroughId = save.meta and save.meta.playthroughId,
+          } })
+          if not key then
+            say("this playthrough has no identity yet")
+            return
+          end
+          self.snapshotKey = key
+          self.list = Snapshot.list(key)
+          if #self.list == 0 then
+            say("No snapshots yet.")
+            return
+          end
+          goto_("snapList")
+        end }
+        return rows
+      end
+
       local function mainItems()
         local items = {}
         if not Sync.configured() then
           items[#items + 1] = { "Set Up", function() goto_("setup") end }
           items[#items + 1] = autosaveRow()
-          items[#items + 1] = { "Restore Previous Save", function()
+          for _, row in ipairs(snapshotRows()) do items[#items + 1] = row end
+          items[#items + 1] = { "Restore Old Save", function()
             self.list = nil
             goto_("restorePick")
           end }
@@ -120,12 +208,13 @@ return function(mod, cfgOpts)
           Sync.request(true)
           say("Syncing...")
         end }
-        items[#items + 1] = { "Pair Another Device", function() goto_("pair") end }
-        items[#items + 1] = { "Restore Previous Save", function()
+        items[#items + 1] = { "Pair Device", function() goto_("pair") end }
+        items[#items + 1] = { "Restore Old Save", function()
           self.list = nil
           goto_("restorePick")
         end }
         items[#items + 1] = autosaveRow()
+        for _, row in ipairs(snapshotRows()) do items[#items + 1] = row end
         items[#items + 1] = {
           "Auto sync: " .. (Store.config().auto and "ON" or "OFF"),
           function()
@@ -172,7 +261,7 @@ return function(mod, cfgOpts)
               "Uploading this device's save...", "Kept this device's save")
             goto_("main")
           end },
-          { "Use the cloud save", function()
+          { "Use cloud save", function()
             Sync.runForeground(Sync.resolveUseCloud(key),
               "Downloading the cloud save...", "Cloud save restored")
             goto_("main")
@@ -289,12 +378,12 @@ return function(mod, cfgOpts)
         end
         if self.view == "paste" then
           local items = {
-            { "Paste from clipboard", function()
+            { "Paste clipboard", function()
               self:acceptPaste(clipboardGet())
             end },
           }
           if codeFromFile() then
-            items[#items + 1] = { "Read setup-code.txt", function()
+            items[#items + 1] = { "Read code file", function()
               self:acceptPaste(codeFromFile())
             end }
           end
@@ -367,8 +456,14 @@ return function(mod, cfgOpts)
         if self.view == "restoreList" then
           local items = {}
           for _, row in ipairs(self.list or {}) do
+            -- "YYYY-MM-DD HH:MM replaced" does not fit a 17-character row.
+            -- The list is newest-first and only ever spans a handful of
+            -- months, not years, so the year is the part safe to drop; the
+            -- tag is capped to four characters rather than relying on the
+            -- fallback :sub() in the draw loop to cut a real word in half.
             local label = row.where == "local"
-              and (row.when .. " " .. row.tag)
+              and ((row.when and row.when:sub(6) or tostring(row.when))
+                   .. " " .. tostring(row.tag or ""):sub(1, 4))
               or ("version " .. tostring(row.seq))
             items[#items + 1] = { label, function()
               self.pendingRestore = row
@@ -384,6 +479,33 @@ return function(mod, cfgOpts)
               doRestore(self.pendingRestore)
             end },
             { "No", function() goto_("restoreList") end },
+          }
+        end
+        if self.view == "snapList" then
+          local items = {}
+          for _, row in ipairs(self.list or {}) do
+            items[#items + 1] = { row.when, function()
+              self.pendingSnapRestore = row
+              goto_("confirmSnapRestore")
+            end }
+          end
+          items[#items + 1] = { "Back", function() goto_("main") end }
+          return items
+        end
+        if self.view == "confirmSnapRestore" then
+          return {
+            { "Yes, restore it", function()
+              local row = self.pendingSnapRestore
+              local ok, err = Snapshot.restore(self.game, self.snapshotKey,
+                row and row.name)
+              if ok then
+                say("Restored.")
+              else
+                say(err or "could not restore")
+              end
+              goto_("main")
+            end },
+            { "No", function() goto_("snapList") end },
           }
         end
         return { { "Back", function() goto_("main") end } }
@@ -518,14 +640,16 @@ return function(mod, cfgOpts)
           Font.draw("Connected", 16, y)
           drawTick(92, y)
         end
+        -- An error is the one string the player most needs to read in full,
+        -- so it gets more of the box than a routine status line does -- see
+        -- the file header for why these are wrapped instead of cut.
+        local statusCap = (Sync.state == "error") and 4 or 2
         for _, line in ipairs(statusLines()) do
-          Font.draw(line:sub(1, 19), 8, y + 12)
-          y = y + 12
+          y = drawWrapped(8, y + 12, line, statusCap)
         end
 
         if self.message then
-          Font.draw(self.message:sub(1, 19), 8, y + 12)
-          y = y + 12
+          y = drawWrapped(8, y + 12, self.message, 4)
         end
 
         -- View-specific detail above the menu.
@@ -535,12 +659,11 @@ return function(mod, cfgOpts)
             y = y + 12
           end
           if self.link.verifyUrl then
-            Font.draw(self.link.verifyUrl:gsub("^https://", ""):sub(1, 19), 8, y + 12)
-            y = y + 12
+            y = drawWrapped(8, y + 12,
+              (self.link.verifyUrl:gsub("^https://", "")), 2)
           end
           if self.link.message then
-            Font.draw(self.link.message:sub(1, 19), 8, y + 12)
-            y = y + 12
+            y = drawWrapped(8, y + 12, self.link.message, 3)
           end
         elseif self.view == "browser" and self.link then
           Font.draw("Sign in, copy the", 8, y + 12)
@@ -582,6 +705,10 @@ return function(mod, cfgOpts)
         elseif self.view == "confirmRestore" and self.pendingRestore then
           Font.draw("Replace the save on", 8, y + 12)
           Font.draw("this device?", 8, y + 24)
+          y = y + 24
+        elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
+          Font.draw("Restore this", 8, y + 12)
+          Font.draw("snapshot?", 8, y + 24)
           y = y + 24
         elseif self.view == "disconnect" then
           Font.draw("Stop syncing on this", 8, y + 12)

@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-08-11
+
+### Fixed
+- **Saves never uploaded to GitHub. Root cause: a save is bytes, not text.**
+  Reported from the first real install: sign-in worked, the gist got its
+  README, and no save ever arrived. The engine serialises saves with Lua's
+  `%q`, which passes bytes >= 0x80 through raw, so `save.lua` need not be
+  valid UTF-8 -- and the sync layer put those bytes straight into a JSON body.
+  Verified live against the real API: a raw `0xE9` gets
+  `400 {"message":"Problems parsing JSON"}`; valid UTF-8 gets 200. Payloads
+  are now base64 behind a self-describing `b64:` prefix, applied at the sync
+  layer so every provider is fixed at once, with a raw fallback on read so
+  history written by an older build still restores.
+- **The self-hosted server had the same defect, silently.** `raw.toString('utf8')`
+  rewrites an invalid byte as U+FFFD, so it would have stored a corrupted save
+  and reported success. It now decodes with `fatal: true` and answers 400.
+- Every test fixture was pure ASCII, which is why 250+ checks passed while the
+  real thing failed on first contact. Added a binary torture fixture (lone
+  `0xE9`, valid multi-byte UTF-8, NUL, DEL, `0xFF`, quotes, backslash,
+  newline, tab) that must round-trip byte-identically device-to-device, and an
+  assertion that nothing non-ASCII ever reaches the wire.
+- `Content-Type: application/json` on GitHub requests. Kept as hardening --
+  live testing showed real GitHub returns 200 without it on both POST and
+  PATCH, so it was **not** the cause of the above.
+
+### Added
+- `tests/github.test.js`: a fake GitHub gist API (device flow, create, read,
+  patch-with-deletes, list) driving the real provider through the real HTTP
+  worker, so the provider is no longer untested for want of credentials.
+
 ## [1.2.0] - 2026-08-11
 
 ### Added
