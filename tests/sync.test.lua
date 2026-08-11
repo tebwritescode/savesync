@@ -937,5 +937,53 @@ for name, body in pairs(cloud.files) do
   end
 end
 
+-- 13. SLOT OVERVIEW and generic version enumeration.
+--
+-- versions() reads the engine's registry rather than naming Red/Blue/Yellow,
+-- so an engine that adds Gold or Crystal is synced by this code unchanged.
+-- A hardcoded list would ignore them silently, stranding a playthrough on one
+-- machine with nothing to show for it.
+
+activate(A)
+local seen = {}
+for _, v in ipairs(A.Store.versions()) do seen[v] = true end
+check("versions() finds the engine's registered version", seen.red == true)
+
+-- Pretend the engine grew a Gen 2 entry. Nothing in the mod is Gen 1
+-- specific, so this must be picked up with no code change.
+A.gameVersion.VERSIONS = { red = { id = "red" }, gold = { id = "gold" } }
+local gen2 = {}
+for _, v in ipairs(A.Store.versions()) do gen2[v] = true end
+check("a new engine version is synced without a code change", gen2.gold == true)
+check("and the existing one still is", gen2.red == true)
+eq("the list is sorted, so cycles are deterministic",
+  table.concat(A.Store.versions(), ","), "gold,red")
+A.gameVersion.VERSIONS = { red = { id = "red" } }
+
+-- The overview is what the Save files screen draws.
+local over = A.Store.slotOverview({})
+check("slot overview lists this device's saves", #over > 0)
+local found
+for _, row in ipairs(over) do if row.version == "red" then found = row end end
+check("a row names its version and slot", found ~= nil
+  and found.slotId ~= nil and found.key ~= nil)
+eq("a save matching the cloud reads as synced", found and found.status, "synced")
+
+-- A save the cloud has not seen must not claim to be safe.
+activate(A)
+A.Store.keyState(found.key).syncedHash = nil
+local after = A.Store.slotOverview({})
+for _, row in ipairs(after) do
+  if row.key == found.key then
+    eq("an unsynced save says so", row.status, "new")
+  end
+end
+
+-- A conflicted save is called out rather than shown as merely waiting.
+local conflicted = A.Store.slotOverview({ [found.key] = true })
+for _, row in ipairs(conflicted) do
+  if row.key == found.key then eq("a conflict is surfaced", row.status, "conflict") end
+end
+
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

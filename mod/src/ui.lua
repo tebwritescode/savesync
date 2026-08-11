@@ -273,6 +273,10 @@ return function(mod, cfgOpts)
           Sync.request(true)
           say("Syncing...")
         end }
+        items[#items + 1] = { "Save files", function()
+          self.slotRows = Store.slotOverview(Sync.conflicts)
+          goto_("slots")
+        end }
         items[#items + 1] = { "Pair Device", function() goto_("pair") end }
         items[#items + 1] = { "Restore Old Save", function()
           self.list = nil
@@ -389,12 +393,18 @@ return function(mod, cfgOpts)
 
       -- ------------------------------------------------------ restore
 
-      local function loadLocalBackups()
+      -- `onlyKey` scopes the list to one save file. Picking a slot first and
+      -- then a version of it is far easier to reason about than one flat list
+      -- of every backup on the device, which on a multi-slot install is a
+      -- wall of timestamps with no way to tell whose they are.
+      local function loadLocalBackups(onlyKey)
         local rows = {}
         for key in pairs(Store.readAllLocal()) do
+          if not onlyKey or key == onlyKey then
           for _, b in ipairs(Store.listBackups(key)) do
             rows[#rows + 1] = { key = key, name = b.name, when = b.when,
                                 tag = b.tag, where = "local" }
+          end
           end
         end
         -- Keys with no local save can still have backups from a previous
@@ -494,9 +504,32 @@ return function(mod, cfgOpts)
           end }
           return items
         end
+        if self.view == "slots" then
+          local items = {}
+          for _, row in ipairs(self.slotRows or {}) do
+            -- "RED 1 synced" fits the 17-column budget where the slot id and
+            -- a full status word would not.
+            local n = tostring(row.slotId or "?"):match("(%d+)$") or "?"
+            local label = ("%s %s %s"):format(
+              tostring(row.version):upper():sub(1, 6), n, row.status)
+            items[#items + 1] = { label, function()
+              self.restoreKey = row.key
+              self.list = loadLocalBackups(row.key)
+              self.listKind = "local"
+              goto_("restoreList")
+            end }
+          end
+          if #items == 0 then
+            items[#items + 1] = { "No saves yet", function() goto_("main") end }
+          end
+          items[#items + 1] = { "Back", function() goto_("main") end }
+          return items
+        end
+
         if self.view == "restorePick" then
           local items = {
             { "From this device", function()
+              self.restoreKey = nil
               self.list = loadLocalBackups()
               self.listKind = "local"
               goto_("restoreList")
@@ -655,7 +688,7 @@ return function(mod, cfgOpts)
           if self.view == "main" then
             self.game.stack:pop()
           elseif self.view == "restoreList" then
-            goto_("restorePick")
+            goto_(self.restoreKey and "slots" or "restorePick")
           else
             goto_("main")
           end

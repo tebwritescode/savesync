@@ -120,10 +120,58 @@ end
 --- syncs both without being asked about it.
 function Store.versions()
   local out = {}
-  for _, id in ipairs({ "red", "blue", "yellow" }) do
-    if GameVersion.info and GameVersion.info(id) then out[#out + 1] = id end
+  -- Read the engine's own registry rather than naming Red/Blue/Yellow here.
+  -- Nothing in this mod is Gen 1 specific -- a save is bytes, a slot is a
+  -- slot, and the sync key is "<version>-<playthroughId>" -- so an engine
+  -- that adds Gold or Crystal to GameVersion.VERSIONS gets synced by this
+  -- code unchanged. A hardcoded list would silently ignore them instead,
+  -- which is the kind of failure nobody notices until a playthrough is
+  -- stranded on one machine.
+  local registry = GameVersion.VERSIONS
+  if type(registry) == "table" then
+    for id in pairs(registry) do
+      if type(id) == "string" then out[#out + 1] = id end
+    end
+    -- Sorted so a cycle walks saves in the same order every time; pairs()
+    -- order would make the report and the upload batch shuffle per run.
+    table.sort(out)
   end
   if #out == 0 then out = { GameVersion.get and GameVersion.get() or "red" } end
+  return out
+end
+
+--- Every slot on this device with the state sync has it in.
+--- The screen shows this so a player can see at a glance which of their files
+--- are safe and which are still waiting, rather than inferring it from a
+--- single global "last synced" line that says nothing about slot three.
+function Store.slotOverview(conflicts)
+  conflicts = conflicts or {}
+  local out = {}
+  for key, rec in pairs(Store.readAllLocal()) do
+    local st = Store.keyState(key)
+    local status
+    if conflicts[key] then
+      status = "conflict"
+    elseif st.syncedHash == rec.hash then
+      status = "synced"
+    elseif st.syncedHash == nil then
+      status = "new"
+    else
+      status = "waiting"
+    end
+    out[#out + 1] = {
+      key = key,
+      version = rec.version,
+      slotId = rec.slotId,
+      status = status,
+      name = rec.save and rec.save.player and rec.save.player.name or nil,
+      badges = rec.summary and rec.summary.badges or nil,
+    }
+  end
+  table.sort(out, function(a, b)
+    if a.version ~= b.version then return a.version < b.version end
+    return tostring(a.slotId) < tostring(b.slotId)
+  end)
   return out
 end
 

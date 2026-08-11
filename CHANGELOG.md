@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-08-11
+
+### Added
+- **Save files** on the menu: every slot on the device with the state sync has
+  it in — `RED 1 synced`, `RED 2 waiting`, `RED 3 conflict`. A single global
+  "last synced" line says nothing about slot three, which is exactly the slot
+  a player worries about.
+- Picking a slot opens the backups for **that save**. One flat list of every
+  backup on a multi-slot install is a wall of timestamps with no way to tell
+  whose they are.
+
+### Changed
+- **Ready for Gen 2.** The version list is read from the engine's own
+  `GameVersion.VERSIONS` registry rather than naming Red, Blue and Yellow in
+  this mod. Nothing here is Gen 1 specific — a save is bytes, a slot is a
+  slot, and the sync key is `<version>-<playthroughId>` — so an engine that
+  registers Gold or Crystal is synced by this code unchanged. Tested by
+  adding a fake Gen 2 entry to the registry and asserting it syncs; hardcode
+  the list again and that test fails.
+- Versions are walked in sorted order, so a cycle reports and uploads in the
+  same order every run.
+
 ## [1.6.1] - 2026-08-11
 
 ### Changed
