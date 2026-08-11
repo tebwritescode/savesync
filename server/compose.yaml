@@ -1,0 +1,32 @@
+# Self-hosted Gen1Recomp cloud saves.
+#
+#   docker compose up -d
+#   docker compose logs cloudsaves     # <- your setup code is printed here
+#
+# Paste that code into the game: Cloud Saves -> Set Up -> Use a setup code.
+# Do the same on every other device and they all share one set of saves.
+
+services:
+  cloudsaves:
+    build: .
+    # or, once you have pushed it somewhere:
+    # image: ghcr.io/you/gen1recomp-cloudsaves:1.0.0
+    container_name: gen1recomp-cloudsaves
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # The address the GAME will use. On a LAN, your machine's IP; behind a
+      # reverse proxy or tunnel, the public https URL. It is baked into the
+      # setup code, so get it right before you copy the code out.
+      PUBLIC_URL: "http://192.168.1.10:8787"
+      SERVER_NAME: "My save server"
+      # Leave unset to have a token minted on first boot and written to
+      # /data/tokens.json. Set it to manage tokens yourself; comma-separated,
+      # one per household member who should have their OWN separate storage.
+      # CLOUDSAVE_TOKENS: "pick-something-long-and-random"
+    volumes:
+      - saves:/data
+
+volumes:
+  saves:

@@ -1,0 +1,17 @@
+{
+  "_readme": [
+    "OAuth client ids for the sign-in providers. These are PUBLIC values --",
+    "the GitHub device flow and Dropbox PKCE both exist so that a desktop app",
+    "needs no client secret -- but they are per-distribution, so a fork should",
+    "register its own rather than borrow these. See docs/providers.md for the",
+    "two-minute registration walkthrough for each.",
+    "An empty id just means that provider says 'not configured' when picked;",
+    "the self-hosted server option needs no id at all and always works."
+  ],
+  "github": {
+    "client_id": ""
+  },
+  "dropbox": {
+    "client_id": ""
+  }
+}

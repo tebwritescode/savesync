@@ -1,0 +1,527 @@
+-- The sync engine.
+--
+-- One cycle, run after every in-game save and on a slow timer, does this:
+--
+--   1. read the cloud's manifests
+--   2. for each save, compare three hashes: what is on disk, what is in the
+--      cloud, and what this device last agreed with the cloud about
+--   3. upload, download, do nothing -- or refuse and raise a conflict
+--
+-- THE THREE-HASH RULE is the whole safety story.  `syncedHash` is the last
+-- state this device and the cloud were known to agree on.  If only the local
+-- file moved away from it, this device is ahead: upload.  If only the cloud
+-- did, the other device is ahead: download.  If BOTH moved, two devices
+-- changed the same save independently and no automatic answer is correct --
+-- so the engine stops, says so, and waits for the player.  There is no code
+-- path where a newer file is overwritten because it happened to have an
+-- older wall-clock timestamp, which is how naive sync loses playthroughs.
+--
+-- EVERY UPLOAD IS ALSO A HISTORY ENTRY.  A cycle writes `<key>.sav`,
+-- `<key>.json` and `<key>.h<seq>.sav` in one batch, so the version a device
+-- overwrites is already archived by the device that wrote it -- the loser of
+-- a conflict is always recoverable from either side.
+--
+-- ONLY SAVES GO UP.  The upload set is built from Store.readAllLocal(),
+-- which reads the engine's save slots and nothing else.  ROM data, the ROM
+-- cache, assets and this mod's own config are not reachable from here.
+
+local Op = CLOUD_SAVES_INCLUDE("src/op.lua")
+local Json = CLOUD_SAVES_INCLUDE("src/json.lua")
+local Util = CLOUD_SAVES_INCLUDE("src/util.lua")
+local Store = CLOUD_SAVES_INCLUDE("src/store.lua")
+local Providers = CLOUD_SAVES_INCLUDE("src/providers/init.lua")
+
+local Sync = {}
+
+-- How many past versions of each save the cloud keeps.  The data is tiny, so
+-- this is bounded by tidiness rather than by cost.
+local KEEP_HISTORY = 10
+
+-- Debounce after an in-game save: the player may be about to save again
+-- (Poké Center, then straight back out), and one upload for the pair is
+-- kinder to everybody than two.
+local UPLOAD_DELAY = 4
+
+-- Idle re-check.  A second device that has been left running should notice a
+-- save made elsewhere without the player pressing anything.
+local IDLE_INTERVAL = 300
+
+-- Offline retry backoff, capped.  A player on a plane should not have the
+-- mod hammering a dead connection.
+local RETRY_STEPS = { 20, 60, 180, 300 }
+
+Sync.state = "off"           -- off | idle | working | conflict | error | offline
+Sync.status = ""
+Sync.lastSync = 0
+Sync.conflicts = {}          -- key -> { local_, cloud }
+Sync.deferred = nil          -- a download held back because a game is live
+
+local op                     -- the single in-flight op, if any
+local dirtyAt                -- when an in-game save asked for an upload
+local nextIdle = 0
+local retryIndex = 0
+local retryAt = 0
+
+-- Set by main.lua.  A download must never land under a live session: the
+-- running game holds the old save in memory and would write it straight back
+-- out at the next SAVE, silently undoing the download.
+Sync.canApplyDownload = function() return true end
+
+-- ------------------------------------------------------------ names
+
+local function savName(key) return key .. ".sav" end
+local function jsonName(key) return key .. ".json" end
+local function histName(key, seq) return ("%s.h%04d.sav"):format(key, seq) end
+
+local function parseHist(name)
+  local key, seq = name:match("^(.+)%.h(%d+)%.sav$")
+  return key, tonumber(seq)
+end
+
+-- ------------------------------------------------------------ config
+
+function Sync.configured()
+  local c = Store.config()
+  return c.provider ~= nil and c.cfg ~= nil
+end
+
+function Sync.provider()
+  local c = Store.config()
+  return c.provider and Providers.get(c.provider) or nil
+end
+
+function Sync.describe()
+  local p, c = Sync.provider(), Store.config()
+  if not p then return "Not connected" end
+  return p.describe(c.cfg)
+end
+
+-- Providers may refresh their own credentials mid-op (Dropbox does); persist
+-- the moment they say so rather than at some later checkpoint that a crash
+-- could skip.
+local function persistProviderConfig()
+  local c = Store.config()
+  if c.cfg and c.cfg.dirty then
+    c.cfg.dirty = nil
+    Store.saveConfig(c)
+  end
+end
+
+-- ------------------------------------------------------- the cycle
+
+local function manifestFor(rec, seq, parent)
+  local s = rec.summary or {}
+  return {
+    v = 1,
+    key = rec.key,
+    hash = rec.hash,
+    seq = seq,
+    parent = parent,
+    device = Store.config().device,
+    deviceName = Store.config().deviceName,
+    savedAt = (type(rec.save.meta) == "table" and rec.save.meta.savedAt)
+      or Util.now(),
+    uploadedAt = Util.now(),
+    -- purely so the conflict screen can say "RED, 3 badges, 4:12" instead of
+    -- showing the player two hashes and asking them to choose
+    player = rec.save.player and rec.save.player.name or nil,
+    badges = s.badges,
+    time = s.timeText,
+    dex = s.dexCount,
+  }
+end
+
+--- Build the batch that uploads one save, including its history entry and
+--- the prune of anything past KEEP_HISTORY.
+local function uploadFiles(rec, seq, parent, existingNames)
+  local files = {}
+  files[savName(rec.key)] = rec.bytes
+  files[jsonName(rec.key)] = Json.encode(manifestFor(rec, seq, parent))
+  files[histName(rec.key, seq)] = rec.bytes
+
+  local seqs = {}
+  for name in pairs(existingNames or {}) do
+    local k, s = parseHist(name)
+    if k == rec.key and s then seqs[#seqs + 1] = s end
+  end
+  seqs[#seqs + 1] = seq
+  table.sort(seqs, function(a, b) return a > b end)
+  for i = KEEP_HISTORY + 1, #seqs do
+    files[histName(rec.key, seqs[i])] = false
+  end
+  return files
+end
+
+--- THE DECISION TABLE, as a pure function of three hashes.
+---
+--- `localHash` is what is on disk, `cloudHash` what the cloud says it has,
+--- and `agreed` the last state this device and the cloud were known to share
+--- (nil when this device has never synced this save).  Kept separate from the
+--- cycle so it can be tested exhaustively -- it is the one piece of logic
+--- here that can lose a playthrough if it is wrong.
+function Sync.decide(localHash, cloudHash, agreed)
+  if localHash and not cloudHash then return "upload" end
+  if cloudHash and not localHash then return "download" end
+  if not localHash and not cloudHash then return "nothing" end
+  if localHash == cloudHash then return "insync" end
+  local localMoved = localHash ~= agreed
+  local cloudMoved = cloudHash ~= agreed
+  if localMoved and cloudMoved then return "conflict" end
+  if localMoved then return "upload" end
+  return "download"
+end
+
+--- One full sync pass.  Returns a small report the UI turns into a status
+--- line; failures come back as op errors with a player-facing message.
+function Sync.cycle(opts)
+  opts = opts or {}
+  local provider = Sync.provider()
+  local conf = Store.config()
+  if not provider then return Op.failed("cloud saves are not set up yet") end
+
+  return Op.new(function(ctx)
+    local names = ctx:await(provider.list(conf.cfg))
+    persistProviderConfig()
+
+    -- Which saves exist on either side.  A cloud key with no local file is a
+    -- save from another device this one has never seen -- the whole point.
+    local locals = Store.readAllLocal()
+    local keys = {}
+    for key in pairs(locals) do keys[key] = true end
+    for name in pairs(names) do
+      local k = name:match("^(.+)%.json$")
+      if k then keys[k] = true end
+    end
+
+    -- Read every manifest in one call; providers that can answer in a single
+    -- request (gists, the self-hosted server) do.
+    local wanted = {}
+    for key in pairs(keys) do
+      if names[jsonName(key)] then wanted[#wanted + 1] = jsonName(key) end
+    end
+    local manifests = {}
+    if #wanted > 0 then
+      local blobs = ctx:await(provider.read(conf.cfg, wanted))
+      persistProviderConfig()
+      for key in pairs(keys) do
+        local raw = blobs[jsonName(key)]
+        if raw then manifests[key] = Json.decode(raw) end
+      end
+    end
+
+    local report = { uploaded = 0, downloaded = 0, conflicts = 0, deferred = 0 }
+    local uploads = {}          -- name -> content, merged into one write
+    local downloads = {}        -- key -> cloud manifest
+
+    for key in pairs(keys) do
+      local rec = locals[key]
+      local cloud = manifests[key]
+      local state = Store.keyState(key)
+      local verdict = Sync.decide(rec and rec.hash, cloud and cloud.hash,
+        state.syncedHash)
+
+      if verdict == "upload" then
+        local seq = (cloud and tonumber(cloud.seq) or 0) + 1
+        for n, c in pairs(uploadFiles(rec, seq, cloud and cloud.hash, names)) do
+          uploads[n] = c
+        end
+        state.pendingSeq, state.pendingHash = seq, rec.hash
+        report.uploaded = report.uploaded + 1
+
+      elseif verdict == "download" then
+        downloads[key] = cloud
+        report.downloaded = report.downloaded + 1
+
+      elseif verdict == "conflict" then
+        -- Two devices, one save, both changed.  Stop and ask.
+        Sync.conflicts[key] = { key = key, localRec = rec, cloud = cloud }
+        state.conflict = true
+        report.conflicts = report.conflicts + 1
+
+      elseif verdict == "insync" then
+        state.syncedHash, state.syncedSeq = cloud.hash, cloud.seq
+        state.conflict = nil
+        Sync.conflicts[key] = nil
+      end
+    end
+
+    -- ---- downloads first: a device that is behind should catch up before
+    -- it publishes anything, so a half-finished cycle never makes it the
+    -- authority on a save it has not seen.
+    if next(downloads) then
+      if not Sync.canApplyDownload() then
+        report.deferred = report.downloaded
+        report.downloaded = 0
+        Sync.deferred = true
+        downloads = {}
+      else
+        local wantSav = {}
+        for key in pairs(downloads) do wantSav[#wantSav + 1] = savName(key) end
+        local blobs = ctx:await(provider.read(conf.cfg, wantSav))
+        persistProviderConfig()
+        for key, cloud in pairs(downloads) do
+          local bytes = blobs[savName(key)]
+          local version = Store.versionOfKey(key)
+          if type(bytes) == "string" and bytes ~= "" then
+            if Util.hash(bytes) ~= cloud.hash then
+              -- The manifest and the blob disagree: a partial write
+              -- somewhere. Refuse rather than write a torn save to disk.
+              ctx:fail("the cloud copy of " .. key .. " looks damaged")
+            end
+            local ok, err = Store.apply(version, key, bytes, "cloud")
+            if not ok then ctx:fail(err) end
+            local state = Store.keyState(key)
+            state.syncedHash, state.syncedSeq = cloud.hash, cloud.seq
+            state.conflict = nil
+            Sync.conflicts[key] = nil
+          end
+        end
+        Sync.deferred = nil
+      end
+    end
+
+    -- ---- then uploads, in one batch
+    if next(uploads) then
+      ctx:await(provider.write(conf.cfg, uploads))
+      persistProviderConfig()
+      for key in pairs(keys) do
+        local state = Store.keyState(key)
+        if state.pendingHash then
+          state.syncedHash, state.syncedSeq = state.pendingHash, state.pendingSeq
+          state.pendingHash, state.pendingSeq = nil, nil
+          state.conflict = nil
+          Sync.conflicts[key] = nil
+        end
+      end
+    end
+
+    local c = Store.config()
+    c.lastSync = Util.now()
+    Store.saveConfig(c)
+    return report
+  end)
+end
+
+-- --------------------------------------------------- conflict resolution
+
+--- Keep this device's version: publish it over the cloud head.  Nothing is
+--- lost -- the cloud's version is already in cloud history, written there by
+--- the device that uploaded it.
+function Sync.resolveKeepLocal(key)
+  local con = Sync.conflicts[key]
+  local provider, conf = Sync.provider(), Store.config()
+  if not con or not provider then return Op.failed("nothing to resolve") end
+  return Op.new(function(ctx)
+    local names = ctx:await(provider.list(conf.cfg))
+    local rec = Store.readLocal(Store.versionOfKey(key)) or con.localRec
+    local seq = (tonumber(con.cloud.seq) or 0) + 1
+    ctx:await(provider.write(conf.cfg,
+      uploadFiles(rec, seq, con.cloud.hash, names)))
+    local state = Store.keyState(key)
+    state.syncedHash, state.syncedSeq, state.conflict = rec.hash, seq, nil
+    Sync.conflicts[key] = nil
+    Store.saveConfig(Store.config())
+    return true
+  end)
+end
+
+--- Take the cloud's version.  The displaced local save is written to
+--- cloud_saves/backups first by Store.apply, so Restore Previous Save can
+--- put it back.
+function Sync.resolveUseCloud(key)
+  local con = Sync.conflicts[key]
+  local provider, conf = Sync.provider(), Store.config()
+  if not con or not provider then return Op.failed("nothing to resolve") end
+  return Op.new(function(ctx)
+    local blobs = ctx:await(provider.read(conf.cfg, { savName(key) }))
+    local bytes = blobs[savName(key)]
+    if type(bytes) ~= "string" or bytes == "" then
+      return ctx:fail("the cloud copy has gone missing")
+    end
+    if Util.hash(bytes) ~= con.cloud.hash then
+      return ctx:fail("the cloud copy looks damaged")
+    end
+    local ok, err = Store.apply(Store.versionOfKey(key), key, bytes, "cloud")
+    if not ok then return ctx:fail(err) end
+    local state = Store.keyState(key)
+    state.syncedHash, state.syncedSeq, state.conflict =
+      con.cloud.hash, con.cloud.seq, nil
+    Sync.conflicts[key] = nil
+    Store.saveConfig(Store.config())
+    return true
+  end)
+end
+
+-- ------------------------------------------------------- cloud history
+
+--- List the versions of a save the cloud is holding, newest first.
+function Sync.history(key)
+  local provider, conf = Sync.provider(), Store.config()
+  if not provider then return Op.failed("cloud saves are not set up yet") end
+  return Op.new(function(ctx)
+    local names = ctx:await(provider.list(conf.cfg))
+    local out = {}
+    for name, size in pairs(names) do
+      local k, seq = parseHist(name)
+      if k == key then out[#out + 1] = { name = name, seq = seq, size = size } end
+    end
+    table.sort(out, function(a, b) return a.seq > b.seq end)
+    return out
+  end)
+end
+
+--- Pull one history entry down over the live save (backing the live one up).
+function Sync.restoreHistory(key, name)
+  local provider, conf = Sync.provider(), Store.config()
+  if not provider then return Op.failed("cloud saves are not set up yet") end
+  return Op.new(function(ctx)
+    local blobs = ctx:await(provider.read(conf.cfg, { name }))
+    local bytes = blobs[name]
+    if type(bytes) ~= "string" or bytes == "" then
+      return ctx:fail("that version is gone")
+    end
+    local ok, err = Store.apply(Store.versionOfKey(key), key, bytes, "undo")
+    if not ok then return ctx:fail(err) end
+    -- The restored bytes are now local-only; clearing syncedHash makes the
+    -- next cycle treat this device as ahead and publish them, which is what
+    -- the player asked for by restoring.
+    local state = Store.keyState(key)
+    state.syncedHash = nil
+    Store.saveConfig(Store.config())
+    return true
+  end)
+end
+
+-- ---------------------------------------------------------- scheduling
+
+local doneMessage           -- what to say when the current op succeeds
+
+local function begin(newOp, working, done)
+  op = newOp
+  doneMessage = done
+  Sync.state = "working"
+  Sync.status = working or "Syncing..."
+end
+
+--- Ask for a sync.  `now` skips the debounce (the Sync Now button).
+function Sync.request(now)
+  if not Sync.configured() then return end
+  if now then
+    dirtyAt = 0
+    retryAt = 0
+    if not op then begin(Sync.cycle(), "Syncing...") end
+  else
+    dirtyAt = os.time()
+  end
+end
+
+--- The in-game save just happened.  Debounced, because saves come in pairs.
+function Sync.markSaved()
+  if not Sync.configured() then return end
+  dirtyAt = os.time()
+end
+
+local function isOffline(err)
+  err = tostring(err or ""):lower()
+  return err:find("could not resolve", 1, true)
+    or err:find("no connection", 1, true)
+    or err:find("connection", 1, true)
+    or err:find("timed out", 1, true)
+    or err:find("could not reach", 1, true)
+    or err:find("no response", 1, true)
+    or err:find("network", 1, true)
+end
+
+--- Pump.  Called once a frame from main.lua; does nothing at all when the
+--- mod is not set up, which is the state most installs are in.
+function Sync.update()
+  if not Sync.configured() then
+    Sync.state = "off"
+    return
+  end
+
+  if op then
+    local st, value = op:poll()
+    if st == "pending" then return end
+    op = nil
+    if st == "ok" then
+      retryIndex, retryAt = 0, 0
+      Sync.lastSync = Store.config().lastSync or Util.now()
+      if doneMessage then
+        -- a foreground action (resolve, restore) says its own thing, then
+        -- asks for a normal cycle so the two sides line up again
+        Sync.state, Sync.status = "idle", doneMessage
+        doneMessage = nil
+        dirtyAt = os.time() - UPLOAD_DELAY
+        return
+      end
+      if next(Sync.conflicts) then
+        Sync.state = "conflict"
+        Sync.status = "Two devices changed the same save"
+      elseif Sync.deferred then
+        Sync.state = "idle"
+        Sync.status = "Newer save in the cloud -- return to the title screen"
+      else
+        Sync.state = "idle"
+        local r = type(value) == "table" and value or {}
+        if (r.uploaded or 0) > 0 then Sync.status = "Save uploaded"
+        elseif (r.downloaded or 0) > 0 then Sync.status = "Save downloaded"
+        else Sync.status = "Up to date" end
+      end
+      nextIdle = os.time() + IDLE_INTERVAL
+    else
+      if isOffline(value) then
+        Sync.state = "offline"
+        Sync.status = "Offline -- will retry"
+      else
+        Sync.state = "error"
+        Sync.status = tostring(value)
+      end
+      retryIndex = math.min(retryIndex + 1, #RETRY_STEPS)
+      retryAt = os.time() + RETRY_STEPS[retryIndex]
+    end
+    return
+  end
+
+  if Sync.state == "conflict" and next(Sync.conflicts) then return end
+
+  local now = os.time()
+  if retryAt > 0 then
+    if now >= retryAt then
+      retryAt = 0
+      begin(Sync.cycle(), "Retrying...")
+    end
+    return
+  end
+  if dirtyAt and now - dirtyAt >= UPLOAD_DELAY then
+    dirtyAt = nil
+    begin(Sync.cycle(), "Saving to the cloud...")
+    return
+  end
+  if not dirtyAt and now >= nextIdle then
+    nextIdle = now + IDLE_INTERVAL
+    begin(Sync.cycle(), "Checking...")
+  end
+end
+
+--- Start an arbitrary provider/sync op as the foreground one (used by the UI
+--- for conflict resolution and restores, which must not race a cycle).
+function Sync.runForeground(newOp, label, done)
+  if op then op:cancel() end
+  begin(newOp, label, done)
+end
+
+function Sync.busy()
+  return op ~= nil
+end
+
+--- Wipe local sync bookkeeping so the next cycle re-decides from scratch.
+--- Used after a restore, and after connecting a new provider.
+function Sync.resetBookkeeping()
+  local c = Store.config()
+  c.keys = {}
+  Store.saveConfig(c)
+  Sync.conflicts = {}
+end
+
+return Sync

@@ -1,0 +1,11 @@
+{
+  "id": "cloud_saves",
+  "name": "Cloud Saves",
+  "version": "1.0.0",
+  "author": "Teb",
+  "description": "Automatic cross-device cloud saves. Sign in once, and your save follows you to every device you play on. The storage is yours -- your own GitHub, Dropbox or self-hosted server -- and only save files are ever uploaded, never ROMs or game content. Conflicting changes are never silently overwritten and every version is kept.",
+  "api": 2,
+  "entry": "main.lua",
+  "permissions": ["network", "filesystem", "engine_internals"],
+  "tags": ["tools", "saves", "online", "backup"]
+}
