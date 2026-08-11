@@ -34,6 +34,7 @@ local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Http = SAVESYNC_INCLUDE("src/http.lua")
 local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
+local Gate = SAVESYNC_INCLUDE("src/gate.lua")
 local installScreen = SAVESYNC_INCLUDE("src/ui.lua")
 
 -- Hand the engine's checkpoint API to the snapshot module.  `mod.checkpoints`
@@ -65,6 +66,7 @@ do
 end
 
 installScreen(mod, { clientIds = clientIds })
+Gate.install(mod)
 
 -- A download replaces the save FILE.  A live session holds the old save in
 -- memory and would write it straight back out at the next in-game SAVE, so a
@@ -108,6 +110,11 @@ mod.hooks:wrap("ui.title_menu.items", function(next, game, items)
       label = "SAVESYNC",
       onSelect = function() openScreen(game) end,
     }
+    -- CONTINUE asks first when the boot check could not confirm this save is
+    -- the current one. Loading a stale save is not data loss -- the conflict
+    -- rule catches that -- but it costs the player every hour they then play
+    -- on the wrong file before anyone tells them.
+    Gate.wrapItems(mod, game, items)
   end)
   return next(game, items)
 end)
@@ -138,7 +145,11 @@ end)
 -- Boot: check the cloud once, early, while the player is still on the title
 -- screen and a download can be applied without argument.
 mod.events:on("game.ready", function()
-  if Sync.configured() and Store.config().auto then Sync.request(true) end
+  -- The second argument marks this as the BOOT check, which is what the
+  -- CONTINUE gate waits on. The title screen is also the only place a
+  -- download can be applied, so this is the one sync that can actually fix a
+  -- stale save rather than just report one.
+  if Sync.configured() and Store.config().auto then Sync.request(true, true) end
 end)
 
 -- Returning to the title after a session is the other moment a deferred

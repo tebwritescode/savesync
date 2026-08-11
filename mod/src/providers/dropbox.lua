@@ -182,12 +182,21 @@ end
 -- perfectly good.  The required scope is in the body; put it in the message,
 -- because the fix is to tick that box in the App Console.
 local function missingScope(res)
-  if not (res and res.code == 401 and type(res.body) == "string") then return nil end
-  if not res.body:find("missing_scope", 1, true) then return nil end
-  local want = res.body:match('"required_scope"%s*:%s*"([^"]+)"')
-  return "your Dropbox app is missing the "
-    .. (want or "required")
-    .. " permission -- add it, then set up SaveSync again"
+  if not (res and type(res.body) == "string") then return nil end
+  -- Dropbox answers a missing permission with 400 on the file endpoints and
+  -- 401 elsewhere, and the 400 body is PLAIN TEXT, not the JSON error object
+  -- the docs show. Checked live: files/list_folder with no scope returns
+  --   HTTP 400  ... does not have the required scope 'files.metadata.read'.
+  -- An earlier version of this only looked for a 401 carrying JSON, so the
+  -- player got "Dropbox said HTTP 400" and no idea which box to tick.
+  if not (res.code == 400 or res.code == 401) then return nil end
+  local want = res.body:match("required scope '([%w%._]+)'")
+    or res.body:match('"required_scope"%s*:%s*"([^"]+)"')
+  if not want and not res.body:find("missing_scope", 1, true) then return nil end
+  return "your Dropbox app is missing the " .. (want or "required")
+    .. " permission. Add it on the App Console Permissions tab, then set up "
+    .. "SaveSync again -- Dropbox does not grant new scopes to a token it "
+    .. "already issued."
 end
 
 -- One authenticated call, refreshing once on expiry or a 401.

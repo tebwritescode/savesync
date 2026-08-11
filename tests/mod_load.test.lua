@@ -200,5 +200,71 @@ do
   end
 end
 
+-- ---- the CONTINUE gate.
+-- Loading a stale save is not data loss (the conflict rule catches that) but
+-- it costs the player every hour they play on the wrong file first. The gate
+-- must appear exactly when the cloud could NOT be checked, and must never
+-- stand between someone and their own game otherwise.
+do
+  local Sync = exports and exports.sync
+  local Store = exports and exports.store
+  T.check(Sync ~= nil and Store ~= nil, "sync and store exported for the gate")
+  if Sync and Store then
+    local c = Store.config()
+    local savedProvider, savedCfg, savedAuto = c.provider, c.cfg, c.auto
+
+    -- Unconfigured: never gate. Most installs are here, and a mod that
+    -- interrupts CONTINUE on a machine that has never been set up is a bug.
+    c.provider, c.cfg = nil, nil
+    T.check(Data.screens.SaveSyncGate ~= nil, "the gate screen is registered")
+
+    local function gateNeeded()
+      -- Gate.needed() is not exported; exercise it through the real title
+      -- menu wrap instead, which is what actually decides.
+      local ran = false
+      local items = { { label = "CONTINUE", onSelect = function() ran = true end } }
+      local Runtime = require("src.mods.Runtime")
+      -- A real game carries `data` (that is where registered mod screens
+      -- live) and a stack to push onto; without both, pushing the gate falls
+      -- through to require() and blows up rather than testing anything.
+      local fakeGame = {
+        data = Data,
+        input = { wasPressed = function() return false end },
+        stack = { states = {}, push = function(s, st) s.states[#s.states+1] = st end,
+                  pop = function(s) return table.remove(s.states) end,
+                  top = function(s) return s.states[#s.states] end },
+      }
+      Runtime.call("ui.title_menu.items", function(_, l) return l end, fakeGame, items)
+      for _, it in ipairs(items) do
+        if it.label == "CONTINUE" then it.onSelect() end
+      end
+      return not ran   -- if the vanilla action did NOT run, the gate took over
+    end
+
+    T.check(gateNeeded() == false, "unconfigured: CONTINUE is never gated")
+
+    c.provider, c.cfg, c.auto = "server", { provider = "server" }, true
+    Sync.boot = "ok"
+    T.check(gateNeeded() == false, "checked and clean: CONTINUE is not gated")
+
+    Sync.boot = "offline"
+    T.check(gateNeeded() == true, "offline: CONTINUE is gated")
+
+    Sync.boot = "error"
+    T.check(gateNeeded() == true, "check failed: CONTINUE is gated")
+
+    Sync.boot = "checking"
+    T.check(gateNeeded() == true, "still checking: CONTINUE is gated")
+
+    -- Auto sync off is an explicit "leave me alone"; honour it.
+    c.auto = false
+    Sync.boot = "offline"
+    T.check(gateNeeded() == false, "auto sync off: CONTINUE is not gated")
+
+    c.provider, c.cfg, c.auto = savedProvider, savedCfg, savedAuto
+    Sync.boot = "off"
+  end
+end
+
 r.release()
 T.finish("savesync load")

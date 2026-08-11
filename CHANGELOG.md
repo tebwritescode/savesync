@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-08-11
+
+### Added
+- **CONTINUE warns you before loading a save it could not verify.** The boot
+  sync already ran at the title screen; now its result is visible. If the
+  cloud could not be reached, CONTINUE asks — *"Could not reach your cloud
+  saves. This save may be older than another device."* — shows when you last
+  synced, and offers **Play anyway**.
+  - It is a question, never a wall. Offline play is a first-class case, and a
+    mod that stops someone playing their own game on a train has failed worse
+    than one that loads a slightly old save.
+  - When the check comes back clean it does not appear at all, so the common
+    path is untouched.
+  - While the check is still in flight it waits up to 6 seconds, and B skips
+    the wait. If the answer arrives mid-wait and is good, it gets out of the
+    way without making anyone acknowledge anything.
+  - Matched against the engine's own localised `Strings("CONTINUE")` rather
+    than the literal word: a safety net that only protects English speakers
+    is not one.
+  - This does not prevent data loss — the three-hash rule already does that,
+    turning a played-stale save into a conflict rather than an overwrite. It
+    prevents the *wasted evening* that a conflict costs.
+- The official SaveSync icon, resized to 512px (repo) and 256px (index cards)
+  with BOX filtering, which keeps pixel art flat where LANCZOS rings.
+
+### Fixed
+- **Dropbox missing-permission errors were unreadable.** The detector only
+  looked for a 401 carrying a JSON `missing_scope` object, per the docs.
+  Checked live: Dropbox actually answers **400 with plain text** on the file
+  endpoints, so a player with an under-permissioned app got a bare
+  `Dropbox said HTTP 400`. It now extracts the scope name from the real
+  response and says which box to tick — verified against Dropbox's literal
+  bytes.
+
 ## [1.5.0] - 2026-08-11
 
 ### Added

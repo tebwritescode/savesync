@@ -71,6 +71,17 @@ Sync.lastSync = 0
 Sync.conflicts = {}          -- key -> { local_, cloud }
 Sync.deferred = nil          -- a download held back because a game is live
 
+-- BOOT CHECK STATE, for the title screen's "is this save current?" gate.
+--
+-- "checking" until the first cycle after game.ready finishes, then "ok",
+-- "offline" or "error". CONTINUE reads this: loading a save the cloud has
+-- already moved past is not data loss (the three-hash rule turns it into a
+-- conflict rather than an overwrite) but it costs the player every hour they
+-- then play on the wrong file, and they deserve to be told before that
+-- rather than after.
+Sync.boot = "off"            -- off | checking | ok | offline | error
+Sync.bootNote = nil          -- what to tell the player, when it is not "ok"
+
 local op                     -- the single in-flight op, if any
 local dirtyAt                -- when an in-game save asked for an upload
 local nextIdle = 0
@@ -554,8 +565,12 @@ local function begin(newOp, working, done)
 end
 
 --- Ask for a sync.  `now` skips the debounce (the Sync Now button).
-function Sync.request(now)
+function Sync.request(now, isBoot)
   if not Sync.configured() then return end
+  if isBoot then
+    Sync.boot = "checking"
+    Sync.bootNote = nil
+  end
   if now then
     dirtyAt = 0
     retryAt = 0
@@ -596,6 +611,13 @@ function Sync.update()
     op = nil
     if st == "ok" then
       retryIndex, retryAt = 0, 0
+      -- Any successful cycle answers the boot question, not just the first:
+      -- a player who sits on the title screen while the connection returns
+      -- should stop being warned.
+      if Sync.boot ~= "ok" then
+        Sync.boot = "ok"
+        Sync.bootNote = nil
+      end
       Sync.lastSync = Store.config().lastSync or Util.now()
       if doneMessage then
         -- a foreground action (resolve, restore) says its own thing, then
@@ -623,9 +645,17 @@ function Sync.update()
       if isOffline(value) then
         Sync.state = "offline"
         Sync.status = "Offline -- will retry"
+        if Sync.boot == "checking" then
+          Sync.boot = "offline"
+          Sync.bootNote = "No connection, so this save could not be checked."
+        end
       else
         Sync.state = "error"
         Sync.status = tostring(value)
+        if Sync.boot == "checking" then
+          Sync.boot = "error"
+          Sync.bootNote = tostring(value)
+        end
       end
       retryIndex = math.min(retryIndex + 1, #RETRY_STEPS)
       retryAt = os.time() + RETRY_STEPS[retryIndex]
