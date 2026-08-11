@@ -40,6 +40,24 @@ After that it looks after itself:
 | you have no internet | keeps playing normally, retries later |
 | two devices changed the same save | **stops and asks you** — see below |
 
+### Auto save
+
+**SaveSync → Auto save → 3 / 5 / 10 / 15 min.** The game saves itself on a
+timer, so a crash or a closed lid costs minutes instead of hours. It syncs
+like any other save.
+
+It ships **OFF**, deliberately. In Gen 1, saving is part of how people play —
+soft-resetting to re-roll a starter or a legendary catch works *because* the
+game only writes when you tell it to, and an autosave landing between the
+encounter and the reset would quietly destroy that. So it is yours to turn
+on, and every autosave takes a backup first: an autosave at the wrong moment
+is undoable from **Restore Previous Save**, tagged `auto`.
+
+It only ever writes when you are **settled in the overworld** — never in a
+battle, a menu, a shop, a cutscene, a warp, or mid-step between two tiles. A
+save that comes due at a bad moment is not skipped, just held until you walk
+out. You get a brief `SAVED` in the corner when it happens.
+
 ### It will not eat your progress
 
 This is the part the mod takes seriously.

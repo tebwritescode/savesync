@@ -22,6 +22,7 @@ local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Pairing = SAVESYNC_INCLUDE("src/pairing.lua")
 local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
 local Util = SAVESYNC_INCLUDE("src/util.lua")
+local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 
 local VISIBLE = 7            -- menu rows that fit between title and footer
 
@@ -89,10 +90,30 @@ return function(mod, cfgOpts)
 
       -- --------------------------------------------------- menu models
 
+      -- Auto save has nothing to do with the cloud -- it is worth having on a
+      -- machine that will never be set up -- so its row appears whether or
+      -- not a provider is connected, and Restore Previous Save comes with it
+      -- (an autosave is only safe to offer if it is undoable).
+      local function autosaveRow()
+        return { "Auto save: " .. Autosave.label(), function()
+          Autosave.cycle()
+          if Autosave.minutes() > 0 then
+            say("Saves every " .. Autosave.label() .. " when walking.")
+          else
+            say("Auto save off.")
+          end
+        end }
+      end
+
       local function mainItems()
         local items = {}
         if not Sync.configured() then
           items[#items + 1] = { "Set Up", function() goto_("setup") end }
+          items[#items + 1] = autosaveRow()
+          items[#items + 1] = { "Restore Previous Save", function()
+            self.list = nil
+            goto_("restorePick")
+          end }
           return items
         end
         items[#items + 1] = { "Sync Now", function()
@@ -104,6 +125,7 @@ return function(mod, cfgOpts)
           self.list = nil
           goto_("restorePick")
         end }
+        items[#items + 1] = autosaveRow()
         items[#items + 1] = {
           "Auto sync: " .. (Store.config().auto and "ON" or "OFF"),
           function()

@@ -3,6 +3,30 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-11
+
+### Added
+- **Auto save.** SaveSync -> Auto save -> 3 / 5 / 10 / 15 min. Writes the
+  game's own save on a timer, and syncs like any other save.
+  - **Off by default, deliberately.** In Gen 1, saving is part of how people
+    play: soft-resetting to re-roll a starter or a legendary works *because*
+    the game only writes when told, and an autosave between the encounter and
+    the reset would destroy that silently.
+  - **Every autosave takes a backup first**, tagged `auto`, so one that lands
+    at the wrong moment is undoable from Restore Previous Save.
+  - **Only writes when settled in the free-roam overworld** -- never during a
+    battle, menu, shop, cutscene, warp, or mid-step. The gate is the engine's
+    own `Zoom.gateOK` rather than a second opinion about what "in the
+    overworld" means; the fallback for a build that moved it is the same
+    predicate, not a looser one. A save that comes due at a bad moment is
+    deferred, not skipped.
+  - A veto from the `save.write` hook backs off for a minute instead of
+    retrying every frame.
+  - The row appears whether or not the cloud is set up: autosave is worth
+    having on a machine that will never be connected.
+- Auto save and Restore Previous Save are now reachable before setup, so an
+  unconnected install is still useful.
+
 ## [1.1.0] - 2026-08-11
 
 ### Added

@@ -32,6 +32,7 @@ local Json = SAVESYNC_INCLUDE("src/json.lua")
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Http = SAVESYNC_INCLUDE("src/http.lua")
+local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 local installScreen = SAVESYNC_INCLUDE("src/ui.lua")
 
 -- OAuth client ids.  These are PUBLIC values (the device flow and PKCE exist
@@ -80,6 +81,11 @@ mod.hooks:wrap("render.hud", function(next, game, viewport)
   if not ok then
     Sync.state, Sync.status = "error", tostring(err)
   end
+  -- Autosave is independent of the cloud: it is useful on a machine that has
+  -- never been set up, so it is not gated on Sync.configured().  Both calls
+  -- are wrapped because a throw here would cost the player the frame.
+  pcall(Autosave.update, game)
+  pcall(Autosave.draw, mod.ui.Font, viewport)
   return next(game, viewport)
 end)
 
@@ -116,6 +122,9 @@ end)
 -- The game is about to write save.lua.  Ask for an upload; the engine
 -- debounces and does the work a few seconds later, off the render thread.
 mod.events:on("save.writing", function()
+  -- Any save restarts the autosave clock, the player's own included: someone
+  -- who just saved at a Poke Center should not get an autosave a moment later.
+  Autosave.noteSaved()
   if Store.config().auto then Sync.markSaved() end
 end)
 
@@ -140,6 +149,7 @@ end)
 mod.exports = {
   sync = Sync,
   store = Store,
+  autosave = Autosave,
   version = ((mod:read("manifest.json") or ""):match('"version"%s*:%s*"([^"]+)"'))
     or "?",
 }

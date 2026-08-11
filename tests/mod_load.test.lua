@@ -94,13 +94,34 @@ do
     T.check(pcall(screen.update, screen, 0.016), "update runs with no input")
     pressed.down = true
     T.check(pcall(screen.update, screen, 0.016), "update runs on DOWN")
-    pressed.down, pressed.a = false, true
-    -- On a fresh install the only row is Set Up, so this walks into the
-    -- provider picker -- which is where a bad provider table would blow up.
+    pressed.down = false
+
+    -- Select by cursor position rather than by counting keypresses: the row
+    -- list grows, and a test that walks it blind starts asserting about
+    -- whichever row happens to be second.
+    screen.cursor = 1
+    pressed.a = true
     T.check(pcall(screen.update, screen, 0.016), "update runs on A")
-    T.eq(screen.view, "setup", "A on a fresh install opens Set Up")
+    -- Set Up is the first row on a fresh install; this walks into the
+    -- provider picker, which is where a bad provider table would blow up.
+    T.eq(screen.view, "setup", "A on the first row opens Set Up")
     pressed.a = false
     T.check(pcall(screen.update, screen, 0.016), "the provider list builds")
+
+    -- Auto save must be reachable WITHOUT the cloud being set up, and must
+    -- start off.
+    local Autosave = exports and exports.autosave
+    T.check(type(Autosave) == "table", "autosave is exported")
+    if Autosave then
+      T.eq(Autosave.minutes(), 0, "autosave starts off")
+      screen.view, screen.cursor = "main", 2
+      pressed.a = true
+      T.check(pcall(screen.update, screen, 0.016), "the auto save row runs")
+      pressed.a = false
+      T.check(Autosave.minutes() > 0,
+        "the second row on an unconnected install toggles auto save")
+      Autosave.setMinutes(0)
+    end
   end
 end
 

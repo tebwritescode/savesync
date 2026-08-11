@@ -452,5 +452,119 @@ activate(C)
 check("an upload leaves a local backup",
   #C.Store.listBackups("red-PLAYAAAA") > 0)
 
+-- 11. AUTOSAVE.
+--
+-- The gate is the whole feature. An autosave that fires during a battle, a
+-- cutscene or a warp writes a state the player did not choose, and in Gen 1
+-- an autosave that fires at all when they meant to soft-reset destroys a
+-- legitimate technique. So: off by default, and every refusal tested.
+
+activate(A)
+local Autosave = A.include("src/autosave.lua")
+
+eq("autosave is off by default", Autosave.minutes(), 0)
+eq("autosave label reads OFF", Autosave.label(), "OFF")
+
+-- A fake game whose stack top and flags we can move around.
+local overworld = { player = { moving = false } }
+local fakeGame = {
+  overworld = overworld,
+  save = { version = "red" },
+  stack = { states = { overworld }, top = function(s) return s.states[#s.states] end },
+  writeSave = function() return true end,
+}
+
+check("safe when settled in the overworld", Autosave.safe(fakeGame) == true)
+
+-- A menu, a battle, a shop -- anything pushed above the overworld.
+table.insert(fakeGame.stack.states, { screenId = "SomeMenu" })
+check("not safe with a menu open", Autosave.safe(fakeGame) == false)
+table.remove(fakeGame.stack.states)
+
+overworld.transitioning = true
+check("not safe mid-warp", Autosave.safe(fakeGame) == false)
+overworld.transitioning = nil
+
+overworld.runner = { isRunning = function() return true end }
+check("not safe during a script", Autosave.safe(fakeGame) == false)
+overworld.runner = nil
+
+overworld.player.moving = true
+check("not safe mid-step", Autosave.safe(fakeGame) == false)
+overworld.player.moving = false
+
+check("safe again once settled", Autosave.safe(fakeGame) == true)
+
+-- The engine's own gate wins when it is present.  Everything above exercised
+-- the fallback (there is no src.render.Zoom in a pure-Lua test), so this
+-- proves the real predicate is the one consulted in a real build.
+package.loaded["src.render.Zoom"] = {
+  gateOK = function() return false end,
+}
+check("the engine gate is consulted when available",
+  Autosave.safe(fakeGame) == false)
+package.loaded["src.render.Zoom"] = nil
+
+-- Off means off: no write, however long has passed.
+local wrote = 0
+fakeGame.writeSave = function() wrote = wrote + 1 return true end
+Autosave.setMinutes(0)
+Autosave.noteSaved()
+for _ = 1, 5 do Autosave.update(fakeGame) end
+eq("off never writes", wrote, 0)
+
+-- Now the part that matters: that update() actually OBEYS the gate. Testing
+-- safe() alone would pass even if update() never called it, so drive the
+-- clock forward and watch what update() does with it.
+local fakeNow = 100000
+_G.love.timer.getTime = function() return fakeNow end
+
+wrote = 0
+Autosave.setMinutes(3)
+Autosave.update(fakeGame)
+eq("no write before the interval is up", wrote, 0)
+
+fakeNow = fakeNow + 200          -- 3 min 20 s later: due
+overworld.player.moving = true   -- ...but the player is mid-step
+Autosave.update(fakeGame)
+eq("a due save waits while unsafe", wrote, 0)
+
+table.insert(fakeGame.stack.states, { screenId = "Battle" })
+Autosave.update(fakeGame)
+eq("a due save waits through a battle", wrote, 0)
+table.remove(fakeGame.stack.states)
+
+overworld.player.moving = false  -- settled at last
+Autosave.update(fakeGame)
+eq("the deferred save lands as soon as it is safe", wrote, 1)
+
+Autosave.update(fakeGame)
+eq("and does not immediately write again", wrote, 1)
+
+fakeNow = fakeNow + 200
+Autosave.update(fakeGame)
+eq("writes again after another interval", wrote, 2)
+
+-- A veto (the save.write hook, an ephemeral tool session) is an answer, not
+-- an error: back off instead of retrying every frame.
+fakeGame.writeSave = function() wrote = wrote + 1 return false end
+fakeNow = fakeNow + 200
+Autosave.update(fakeGame)
+local afterVeto = wrote
+for _ = 1, 20 do Autosave.update(fakeGame) end
+eq("a veto backs off instead of spinning", wrote, afterVeto)
+
+fakeGame.writeSave = function() wrote = wrote + 1 return true end
+Autosave.setMinutes(0)
+
+-- The cycle walks the offered choices and comes back to off.
+local seen = {}
+for _ = 1, #Autosave.CHOICES do
+  Autosave.cycle()
+  seen[#seen + 1] = Autosave.minutes()
+end
+eq("cycling returns to off", seen[#seen], 0)
+check("cycling offers a real interval", seen[1] > 0)
+
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)
