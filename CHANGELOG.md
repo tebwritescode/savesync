@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-08-11
+
+### Fixed
+- **The screen drew on top of itself.** Reported from a screenshot: status
+  text and menu rows overlapping, and rows spilling past the border. The
+  header flowed with its content while the rows were clamped *upward* to fit,
+  so once the status wrapped onto several lines the rows were positioned
+  above where the text ended. Header and rows now have fixed budgets --
+  4 header lines from y=22, 5 rows from y=72 -- and anything longer is cut
+  there and reachable in full through the reader.
+- The cursor window and the number of rows actually drawn are now one
+  constant. They were two, which would have scrolled the cursor to a row the
+  player could not see.
+- The layout constants are asserted by a test: the header cannot reach the
+  rows, the rows stay inside the border, and the cursor window matches. No
+  drawing test can catch this without real font sheets, so the geometry is
+  checked instead of the pixels.
+
+### Added
+- A repo icon: a floppy disk with a cloud, 32x32 pixel art in the DMG green
+  palette the game itself renders in.
+
 ## [1.4.0] - 2026-08-11
 
 ### Added

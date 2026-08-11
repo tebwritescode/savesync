@@ -35,7 +35,17 @@ local Util = SAVESYNC_INCLUDE("src/util.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 
-local VISIBLE = 7            -- menu rows that fit between title and footer
+-- THE LAYOUT BUDGET, in one place.
+--
+-- The header used to flow with its content while the rows were clamped
+-- upward to fit, so a wrapped status line and the menu drew on top of each
+-- other. Fixed regions are the only thing that works at 160x144, and keeping
+-- them here (rather than as locals inside draw) is what lets a test assert
+-- they still add up.
+local BOX_BOTTOM = 132       -- last y a row may occupy inside the border
+local HEADER_TOP, HEADER_SLOTS = 22, 4
+local ROWS_TOP, ROW_COUNT = 72, 5
+local VISIBLE = ROW_COUNT    -- cursor window; a mismatch scrolls it out of sight
 local WRAP_WIDTH = 19        -- columns available to text starting at x=8
 
 return function(mod, cfgOpts)
@@ -45,6 +55,12 @@ return function(mod, cfgOpts)
       local Theme = mod.ui.Theme
       local self = { game = game, isOpaque = true }
       local input = game.input
+
+      -- Exposed so the loader test can prove the regions still do not
+      -- overlap, which no drawing test can check without real font sheets.
+      self.layout = { headerTop = HEADER_TOP, headerSlots = HEADER_SLOTS,
+                      rowsTop = ROWS_TOP, rowCount = ROW_COUNT,
+                      visible = VISIBLE, boxBottom = BOX_BOTTOM }
 
       self.view = "main"
       self.cursor = 1
@@ -729,100 +745,91 @@ return function(mod, cfgOpts)
 
         Font.draw("SAVESYNC", 16, 8)
 
-        local y = 22
+        -- FIXED LAYOUT, NOT A FLOWING ONE.
+        --
+        -- The header used to grow with its content and the rows were then
+        -- clamped UPWARD to fit -- so once the status wrapped onto a few
+        -- lines, the rows were positioned above where the text ended and the
+        -- two drew on top of each other. On a 160x144 screen there is no
+        -- amount of cleverness that makes arbitrary text and a menu share the
+        -- space: the only thing that works is giving each a fixed budget and
+        -- sending the overflow somewhere it can be read properly.
+        --
+        -- Header: HEADER_SLOTS single lines from HEADER_TOP.
+        -- Rows:   ROW_COUNT lines from ROWS_TOP, always inside the border.
+        -- Anything longer than a slot is cut here and reachable in full
+        -- through the reader.
+        local slot = 0
+        local function hdr(text)
+          if not text or text == "" or slot >= HEADER_SLOTS then return end
+          Font.draw(tostring(text):sub(1, WRAP_WIDTH), 8, HEADER_TOP + slot * 12)
+          slot = slot + 1
+        end
+
         if Sync.configured() and Sync.state ~= "conflict" then
-          Font.draw("Connected", 16, y)
-          drawTick(92, y)
+          Font.draw("Connected", 16, HEADER_TOP)
+          drawTick(92, HEADER_TOP)
+          slot = 1
         end
-        -- An error is the one string the player most needs to read in full,
-        -- so it gets more of the box than a routine status line does -- see
-        -- the file header for why these are wrapped instead of cut.
-        local statusCap = (Sync.state == "error") and 4 or 2
-        for _, line in ipairs(statusLines()) do
-          y = drawWrapped(8, y + 12, line, statusCap)
-        end
+        for _, line in ipairs(statusLines()) do hdr(line) end
+        hdr(self.message)
 
-        if self.message then
-          y = drawWrapped(8, y + 12, self.message, 4)
-        end
-
-        -- View-specific detail above the menu.
+        -- View-specific detail shares the same budget, so it can never push
+        -- the menu off the screen either.
         if self.view == "device" and self.link then
-          if self.link.userCode then
-            Font.draw("Code: " .. self.link.userCode, 8, y + 12)
-            y = y + 12
-          end
-          if self.link.verifyUrl then
-            y = drawWrapped(8, y + 12,
-              (self.link.verifyUrl:gsub("^https://", "")), 2)
-          end
-          if self.link.message then
-            y = drawWrapped(8, y + 12, self.link.message, 3)
-          end
+          hdr(self.link.userCode and ("Code: " .. self.link.userCode) or nil)
+          hdr(self.link.verifyUrl and (self.link.verifyUrl:gsub("^https://", "")) or nil)
+          hdr(self.link.message)
         elseif self.view == "browser" and self.link then
-          Font.draw("Sign in, copy the", 8, y + 12)
-          Font.draw("code, come back.", 8, y + 24)
-          y = y + 24
+          hdr("Sign in, copy the")
+          hdr("code, come back.")
         elseif self.view == "paste" then
-          Font.draw("Copy the code on the", 8, y + 12)
-          Font.draw("other device first.", 8, y + 24)
-          y = y + 24
+          hdr("Copy the code on")
+          hdr("the other device.")
         elseif self.view == "pair" then
           local c = Store.config()
           local code = Pairing.encode(c.provider, c.cfg)
           if c.provider == "github" then
-            Font.draw("Easiest: sign in with", 8, y + 12)
-            Font.draw("GitHub over there.", 8, y + 24)
-            y = y + 24
+            hdr("Easiest: sign in")
+            hdr("with GitHub there.")
           elseif code then
-            for i, line in ipairs(Pairing.wrap(code, 19)) do
-              if i > 4 then break end
-              Font.draw(line, 8, y + 12)
-              y = y + 10
-            end
-            if #code > 76 then Font.draw("...", 8, y + 12); y = y + 10 end
+            -- A pairing code is far too long for the header budget, so show
+            -- only that one exists; Copy code puts it on the clipboard and
+            -- the reader shows it in full.
+            hdr("Code ready. Copy it.")
           end
         elseif self.view == "conflict" then
           local con = Sync.conflicts[self.conflictKey]
           if con then
-            Font.draw("This device:", 8, y + 12)
-            Font.draw(" " .. (con.localRec.summary
-              and (tostring(con.localRec.summary.badges or 0) .. " badges "
-                   .. tostring(con.localRec.summary.timeText or "")) or "save"),
-              8, y + 24)
-            Font.draw("Cloud (" .. tostring(con.cloud.deviceName or "?"):sub(1, 9)
-              .. "):", 8, y + 36)
-            Font.draw(" " .. tostring(con.cloud.badges or 0) .. " badges "
-              .. tostring(con.cloud.time or ""), 8, y + 48)
-            y = y + 48
+            local s2 = con.localRec.summary or {}
+            hdr("Here: " .. tostring(s2.badges or 0) .. " badges")
+            hdr("Cloud: " .. tostring(con.cloud.badges or 0) .. " badges")
+            hdr("(" .. tostring(con.cloud.deviceName or "?"):sub(1, 12) .. ")")
           end
         elseif self.view == "confirmRestore" and self.pendingRestore then
-          Font.draw("Replace the save on", 8, y + 12)
-          Font.draw("this device?", 8, y + 24)
-          y = y + 24
+          hdr("Replace the save on")
+          hdr("this device?")
         elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
-          Font.draw("Restore this", 8, y + 12)
-          Font.draw("snapshot?", 8, y + 24)
-          y = y + 24
+          hdr("Restore this")
+          hdr("snapshot?")
         elseif self.view == "disconnect" then
-          Font.draw("Stop syncing on this", 8, y + 12)
-          Font.draw("device? Saves stay.", 8, y + 24)
-          y = y + 24
+          hdr("Stop syncing here?")
+          hdr("Your saves stay.")
         end
 
         local items = currentItems()
-        self.rowsTop = math.min(y + 18, 132 - math.min(#items, VISIBLE) * 12 + 12)
-        for row = 1, VISIBLE do
+        self.rowsTop = ROWS_TOP
+        for row = 1, ROW_COUNT do
           local i = self.scroll + row
           local it = items[i]
           if not it then break end
-          local ry = self.rowsTop + (row - 1) * 12
-          if ry > 132 then break end
+          local ry = ROWS_TOP + (row - 1) * 12
           Font.draw(it[1]:sub(1, 17), 20, ry)
           if self.cursor == i then Font.drawCode(Theme.cursor, 12, ry) end
         end
-        if self.scroll + VISIBLE < #items then
-          Font.drawCode(Theme.moreArrow, 144, 134)
+        if self.scroll > 0 then drawUpArrow(148, ROWS_TOP - 10) end
+        if self.scroll + ROW_COUNT < #items then
+          Font.drawCode(Theme.moreArrow, 148, ROWS_TOP + ROW_COUNT * 12 - 4)
         end
       end
 

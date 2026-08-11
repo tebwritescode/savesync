@@ -176,5 +176,29 @@ do
   end
 end
 
+-- ---- the layout budget must actually add up.
+-- A real screenshot showed the status text and the menu rows drawn on top of
+-- each other: the header flowed with its content while the rows were clamped
+-- upward to fit. Nothing caught it because draw() needs font sheets no
+-- fixture has -- so assert the geometry instead of the pixels.
+do
+  local game = {
+    input = { wasPressed = function() return false end },
+    stack = { states = {}, pop = function() end },
+  }
+  local ok, screen = pcall(Data.screens.SaveSync.new, game)
+  if ok and screen and screen.layout then
+    local L = screen.layout
+    T.check(L.headerTop + L.headerSlots * 12 <= L.rowsTop,
+      "the header cannot run into the menu rows")
+    T.check(L.rowsTop + (L.rowCount - 1) * 12 <= L.boxBottom,
+      "the menu rows stay inside the border")
+    T.eq(L.visible, L.rowCount,
+      "the cursor window matches the number of rows drawn")
+  else
+    T.check(false, "screen exposes its layout")
+  end
+end
+
 r.release()
 T.finish("savesync load")
