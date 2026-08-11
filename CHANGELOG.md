@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-08-11
+
+### Added
+- First public release. The manifest now carries `github` and `homepage`, so
+  the launcher can offer in-game updates and "Other versions" from the
+  repository's releases -- a listed mod that cannot self-update is a mod
+  every player has to reinstall by hand.
+
 ## [1.4.1] - 2026-08-11
 
 ### Fixed
