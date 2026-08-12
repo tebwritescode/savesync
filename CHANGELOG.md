@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] - 2026-08-12
+
+### Fixed
+- **"B: skip" now skips.** While the boot check was running, the screen offered
+  B to skip -- and B cancelled CONTINUE instead, dropping the player back on
+  the title menu to press CONTINUE again. Someone pressing skip has just said
+  they do not want to wait for the cloud, so B now loads the save without the
+  check, which is what the word means. The footer reads `B: skip and play`.
+  - On the *warning* screen B is still a plain cancel: there are explicit
+    `Play anyway` and `Back` rows to choose between, so B has an obvious
+    meaning there.
+
 ## [1.9.0] - 2026-08-12
 
 ### Added

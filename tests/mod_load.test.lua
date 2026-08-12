@@ -358,5 +358,55 @@ do
   end
 end
 
+-- ---- the boot gate's B key.
+-- Reported: the screen said "B: skip" while it checked the cloud, and B
+-- cancelled CONTINUE instead -- dropping the player back on the title menu
+-- to press CONTINUE again. Skip has to mean "go without the check".
+do
+  local Sync = exports and exports.sync
+  local Store = exports and exports.store
+  if Sync and Store then
+    local c = Store.config()
+    local savedProvider, savedCfg = c.provider, c.cfg
+    c.provider, c.cfg, c.auto = "server", { provider = "server" }, true
+
+    local proceeded = false
+    local pressed = {}
+    local game = {
+      input = { wasPressed = function(_, k) return pressed[k] == true end },
+      stack = { states = {}, pop = function(s) return table.remove(s.states) end,
+                top = function(s) return s.states[#s.states] end },
+    }
+
+    Sync.boot = "checking"
+    local ok, screen = pcall(Data.screens.SaveSyncGate.new, game,
+      function() proceeded = true end)
+    T.check(ok and type(screen) == "table", "the gate constructs while checking")
+    if ok and screen then
+      game.stack.states[1] = screen
+      pressed.b = true
+      pcall(screen.update, screen, 0.016)
+      T.check(proceeded, "B during the check LOADS the save rather than cancelling")
+      T.eq(#game.stack.states, 0, "and closes the gate")
+    end
+
+    -- Once the check has come back with a warning, B is a plain cancel again:
+    -- there are explicit Play anyway / Back rows to choose from.
+    proceeded = false
+    Sync.boot = "offline"
+    local ok2, screen2 = pcall(Data.screens.SaveSyncGate.new, game,
+      function() proceeded = true end)
+    if ok2 and screen2 then
+      game.stack.states[1] = screen2
+      pressed.b = true
+      pcall(screen2.update, screen2, 0.016)
+      T.check(not proceeded, "B on the warning cancels rather than loading")
+    end
+
+    c.provider, c.cfg = savedProvider, savedCfg
+    Sync.boot = "off"
+  end
+end
+
 r.release()
 T.finish("savesync load")

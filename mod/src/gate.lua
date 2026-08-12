@@ -153,8 +153,14 @@ function Gate.install(mod)
           and (now() - self.startedAt) < WAIT_SECONDS
 
         if waiting then
-          -- B skips the wait rather than trapping anyone behind a spinner.
-          if input:wasPressed("b") then back() end
+          -- B SKIPS THE CHECK AND LOADS, it does not cancel CONTINUE.
+          --
+          -- The screen says "skip", and a player who presses it has just told
+          -- us they do not want to wait for the cloud -- so dropping them back
+          -- on the title menu answers a question they did not ask and makes
+          -- them press CONTINUE again. Skipping means "go without the check",
+          -- which is what go() does.
+          if input:wasPressed("b") then go() end
           return
         end
 
@@ -188,7 +194,7 @@ function Gate.install(mod)
         local lines
         if waiting then
           lines = { "Checking for a newer", "save on your other",
-                    "devices...", "", "B: skip" }
+                    "devices...", "", "B: skip and play" }
         elseif Sync.boot == "offline" then
           -- Name the risk in the player's terms. "Offline" alone does not
           -- tell anyone why they should care.
