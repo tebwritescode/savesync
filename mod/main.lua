@@ -78,6 +78,7 @@ end
 
 installScreen(mod, { clientIds = clientIds })
 Gate.install(mod)
+Gate.installAskSave(mod)
 
 -- A download replaces the save FILE.  A live session holds the old save in
 -- memory and would write it straight back out at the next in-game SAVE, so a
@@ -85,6 +86,7 @@ Gate.install(mod)
 -- would look like it had worked.  Downloads therefore wait for the title
 -- screen, and the screen says so.
 local liveGame
+local askAfterSave = false
 Sync.canApplyDownload = function()
   if not liveGame or not liveGame.stack then return true end
   for _, state in ipairs(liveGame.stack.states or {}) do
@@ -106,6 +108,19 @@ mod.hooks:wrap("render.hud", function(next, game, viewport)
   -- are wrapped because a throw here would cost the player the frame.
   pcall(Autosave.update, game)
   pcall(Autosave.draw, mod.ui.Font, viewport)
+
+  -- The prompt waits for the save script to finish and the world to settle.
+  -- Pushing a screen while the vanilla SAVE sequence is still running would
+  -- land on top of its own text box and interrupt a script mid-sentence.
+  if askAfterSave then
+    local ok, gate = pcall(function()
+      return require("src.render.Zoom").gateOK(game.stack:top(), game.overworld)
+    end)
+    if ok and gate == true then
+      askAfterSave = false
+      pcall(mod.ui.push, game, "SaveSyncAskSave")
+    end
+  end
   return next(game, viewport)
 end)
 
@@ -136,18 +151,34 @@ mod.hooks:wrap("ui.title_menu.items", function(next, game, items)
   return next(game, items)
 end)
 
--- Start menu: "SYNC", not "SAVESYNC".  The vanilla Start menu box is sized
--- for POKeMON / ITEM / SAVE / OPTION, and an eight-character row is wider
--- than any of them; the short form also reads as the sibling of SAVE, which
--- is exactly what it is.
-mod.hooks:wrap("ui.start_menu.items", function(next, game, items)
+-- OPTIONS, not the Start menu.
+--
+-- SaveSync is a setting, not a verb the player reaches for mid-battle, and
+-- OPTIONS is already on BOTH the title screen and the in-game Start menu --
+-- so one row here replaces two and stops the mod squatting on a menu the
+-- vanilla game keeps short on purpose.
+--
+-- The row carries its state in the value column, so a player can see whether
+-- their save is safe without opening anything.
+local function statusWord()
+  if not Sync.configured() then return "OFF" end
+  if Sync.state == "conflict" then return "ASK" end
+  if Sync.state == "offline" then return "OFFLINE" end
+  if Sync.state == "error" then return "ERROR" end
+  if Sync.state == "working" then return "SYNCING" end
+  return "ON"
+end
+
+mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   pcall(function()
-    mod.ui.insertBefore(items, "OPTION", {
-      label = "SYNC",
-      onSelect = function() openScreen(game) end,
-    })
+    rows[#rows + 1] = {
+      id = "savesync",
+      label = "SAVESYNC",
+      value = function() return statusWord() end,
+      activate = function(g) openScreen(g or game) end,
+    }
   end)
-  return next(game, items)
+  return next(game, rows)
 end)
 
 -- The game is about to write save.lua.  Ask for an upload; the engine
@@ -157,6 +188,15 @@ mod.events:on("save.writing", function()
   -- who just saved at a Poke Center should not get an autosave a moment later.
   Autosave.noteSaved()
   if Store.config().auto then Sync.markSaved() end
+
+  -- A save the PLAYER chose is the one moment they are thinking about their
+  -- progress, so it is the right moment to offer to push it up now rather
+  -- than in a few seconds. Autosaves and snapshots are excluded: a prompt
+  -- after every one of those is the opposite of what they are for.
+  if Sync.configured() and Store.config().askOnSave
+      and not Autosave.writingOurselves then
+    askAfterSave = true
+  end
 end)
 
 -- Boot: check the cloud once, early, while the player is still on the title

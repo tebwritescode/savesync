@@ -203,7 +203,12 @@ function Autosave.update(game)
       local ok, rec = pcall(Store.readLocal, version)
       if ok and rec then pcall(Store.backup, rec.key, rec.bytes, "auto") end
 
+      -- Flagged so the save.writing listener can tell OUR write from one the
+      -- player chose. A prompt after every autosave would be the opposite of
+      -- what an autosave is for.
+      Autosave.writingOurselves = true
       local wroteOk, wrote = pcall(function() return game:writeSave() end)
+      Autosave.writingOurselves = false
       if not wroteOk or wrote == false then
         -- A failed write must not take the frame down, and must not spin.
         saveBlockedUntil = t + VETO_BACKOFF

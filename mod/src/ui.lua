@@ -285,6 +285,13 @@ return function(mod, cfgOpts)
         items[#items + 1] = autosaveRow()
         for _, row in ipairs(snapshotRows()) do items[#items + 1] = row end
         items[#items + 1] = {
+          "Ask on save: " .. (Store.config().askOnSave ~= false and "ON" or "OFF"),
+          function()
+            local c = Store.config()
+            c.askOnSave = (c.askOnSave == false)
+            Store.saveConfig(c)
+          end }
+        items[#items + 1] = {
           "Auto sync: " .. (Store.config().auto and "ON" or "OFF"),
           function()
             local c = Store.config()

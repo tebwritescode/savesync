@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-08-12
+
+### Added
+- **SaveSync lives in OPTIONS now**, with its state in the value column
+  (`ON` / `SYNCING` / `OFFLINE` / `ASK`), so you can see whether your save is
+  safe without opening anything. OPTIONS is on both the title screen and the
+  in-game Start menu, so one row replaces two — and the Start menu goes back
+  to the length the vanilla game keeps it.
+- **A save you chose asks whether to send it up now.** *"Saved. Send to the
+  cloud now?"* — Sync now / Later / Stop asking.
+  - Only for saves the **player** chose. Autosaves and snapshots never prompt,
+    which is the whole point of them.
+  - It waits for the save script to finish and the world to settle before
+    appearing, so it never lands on top of the game's own text box.
+  - **Later cancels nothing** — the normal debounced upload still happens. All
+    "Sync now" buys is *now*, which is what someone about to close the lid or
+    pick up another device actually wants.
+  - Toggleable from the prompt itself and from `Ask on save` on the SaveSync
+    screen.
+
 ## [1.7.1] - 2026-08-12
 
 ### Fixed

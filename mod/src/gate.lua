@@ -45,6 +45,70 @@ function Gate.needed()
     or Sync.boot == "error"
 end
 
+-- ------------------------------------------------- the after-save prompt
+--
+-- A save the PLAYER chose is the one moment they are actively thinking about
+-- their progress, which makes it the right moment to offer to push it up now
+-- instead of in a few seconds. Autosaves and snapshots never reach here --
+-- prompting after those would be the opposite of what they are for.
+--
+-- Answering NO does not cancel anything: the normal debounced upload still
+-- happens. All YES buys is "now", which is what someone about to close the
+-- lid or swap devices actually wants.
+function Gate.installAskSave(mod)
+  mod.content.screens:register("SaveSyncAskSave", {
+    new = function(game)
+      local Font, Theme = mod.ui.Font, mod.ui.Theme
+      local self = { game = game, isOpaque = false }
+      local input = game.input
+      self.cursor = 1
+
+      local items = {
+        { "Sync now", function()
+          Sync.request(true)
+          game.stack:pop()
+        end },
+        { "Later", function() game.stack:pop() end },
+        { "Stop asking", function()
+          local c = Store.config()
+          c.askOnSave = false
+          Store.saveConfig(c)
+          game.stack:pop()
+        end },
+      }
+
+      function self:update(_dt)
+        if input:wasPressed("up") then
+          self.cursor = self.cursor > 1 and self.cursor - 1 or #items
+        elseif input:wasPressed("down") then
+          self.cursor = self.cursor < #items and self.cursor + 1 or 1
+        elseif input:wasPressed("a") then
+          items[self.cursor][2]()
+        elseif input:wasPressed("b") then
+          game.stack:pop()
+        end
+      end
+
+      function self:draw()
+        -- A short box at the bottom, the way the vanilla game asks a
+        -- question -- the world stays visible behind it, so this reads as a
+        -- prompt rather than as having been taken somewhere.
+        Font.drawBox(0, 8, 20, 9)
+        Font.draw("Saved.", 16, 20)
+        Font.draw("Send to the cloud", 16, 32)
+        Font.draw("now?", 16, 44)
+        for i, it in ipairs(items) do
+          local y = 62 + (i - 1) * 12
+          Font.draw(it[1], 28, y)
+          if self.cursor == i then Font.drawCode(Theme.cursor, 20, y) end
+        end
+      end
+
+      return self
+    end,
+  })
+end
+
 function Gate.install(mod)
   local Font, Theme = nil, nil
 

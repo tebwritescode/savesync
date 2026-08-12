@@ -68,11 +68,31 @@ end
 T.check(hasLabel(rowsFrom("ui.title_menu.items"), "SAVESYNC"),
   "adds a title-menu row")
 
--- The Start-menu row anchors before OPTION, so seed the vanilla anchor.
+-- SaveSync lives in OPTIONS, which is on both the title screen and the
+-- in-game Start menu -- one row instead of two, and the vanilla Start menu
+-- stays as short as the game intends.
 local startRows = rowsFrom("ui.start_menu.items",
   { { label = "POKEMON" }, { label = "OPTION" }, { label = "EXIT" } })
-T.check(hasLabel(startRows, "SYNC"), "adds a Start-menu row")
-T.eq(#startRows, 4, "and adds exactly one row")
+T.eq(#startRows, 3, "the Start menu is left alone")
+
+local optionRows = rowsFrom("ui.options.rows", { { id = "text_speed" } })
+local hasOption = false
+for _, r in ipairs(optionRows or {}) do
+  if r.id == "savesync" then
+    hasOption = true
+    T.check(type(r.activate) == "function", "the options row opens the screen")
+    T.eq(r.value and r.value({}), "OFF",
+      "and shows its state, OFF until it is set up")
+  end
+end
+T.check(hasOption, "adds a SAVESYNC row to OPTIONS")
+
+-- EXIT must stay the last thing on the title menu.
+local titleRows = rowsFrom("ui.title_menu.items",
+  { { label = "CONTINUE" }, { label = "NEW GAME" }, { label = "OPTION" },
+    { label = "EXIT GAME" } })
+T.eq(titleRows[#titleRows].label, "EXIT GAME",
+  "EXIT stays at the bottom of the title menu")
 
 T.check(type(Data.screens) == "table" and Data.screens.SaveSync ~= nil,
   "registers the SaveSync screen")

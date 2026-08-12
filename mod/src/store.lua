@@ -55,6 +55,10 @@ local function blankConfig()
     provider = nil,
     cfg = nil,
     auto = true,
+    -- Ask to sync right after a save the player chose. On by default because
+    -- the request was for the prompt; "Stop asking" on the prompt itself and
+    -- this row both turn it off, so nobody is stuck with it.
+    askOnSave = true,
     keys = {},
   }
 end
