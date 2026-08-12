@@ -307,7 +307,7 @@ return function(mod, cfgOpts)
             Store.saveConfig(c)
           end }
         items[#items + 1] = {
-          "Auto sync: " .. (Store.config().auto and "ON" or "OFF"),
+          "Auto sync: " .. (Store.config().auto ~= false and "ON" or "OFF"),
           function()
             local c = Store.config()
             c.auto = not c.auto

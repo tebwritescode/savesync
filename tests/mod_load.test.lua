@@ -411,5 +411,70 @@ do
   end
 end
 
+
+-- ASK ON SAVE ACTUALLY ASKS.
+--
+-- Reported from a real device: "Ask on save is on but does not ask to sync on
+-- save". Store.config() returned the stored table verbatim, backfilling only
+-- `keys`, so a config written before a setting existed had no field for it --
+-- and a missing field is not a false one. The row displayed `askOnSave ~=
+-- false`, where nil reads ON; the code that fires the prompt tested it for
+-- truth, where nil is OFF. `auto` had the same split across three sites,
+-- silently disabling upload-on-save and the boot check.
+--
+-- This drives the real chain: the engine's save.writing event, then the
+-- render.hud hook the mod pushes the prompt from.
+do
+  local ex = r.loader.exports["savesync"]
+  local Store, Sync = ex.store, ex.sync
+
+  -- A config from before either setting shipped: no askOnSave, no auto.
+  local c = Store.config()
+  c.askOnSave = nil
+  c.auto = nil
+  c.provider = "github"
+  c.cfg = { token = "t", id = "gist" }
+  Store.saveConfig(c)
+  Store.forgetCache()
+
+  local loaded = Store.config()
+  T.eq(loaded.askOnSave, true, "a legacy config gains the askOnSave default")
+  T.eq(loaded.auto, true, "a legacy config gains the auto default")
+  T.check(Sync.configured(), "and is still a configured install")
+
+  r.loader.events:emit("save.writing", { save = {}, meta = {} })
+
+  local pushed = {}
+  local overworld = { transitioning = false }
+  local game = {
+    overworld = overworld,
+    data = Data,
+    input = { wasPressed = function() return false end },
+    stack = { top = function() return overworld end,
+              push = function(_, screen) pushed[#pushed + 1] = screen end },
+  }
+  r.loader.hooks:call("render.hud", function() end, game,
+    { gameWidth = 160, gameHeight = 144, gameX = 0, gameY = 0 })
+
+  T.eq(#pushed, 1, "saving asks whether to sync now")
+
+  -- ...and OFF still means off. Turning the prompt off is the whole escape
+  -- hatch for anyone who does not want it, so it gets its own check rather
+  -- than being implied by the one above.
+  local off = Store.config()
+  off.askOnSave = false
+  Store.saveConfig(off)
+  r.loader.events:emit("save.writing", { save = {}, meta = {} })
+  local quiet = {}
+  game.stack.push = function(_, screen) quiet[#quiet + 1] = screen end
+  r.loader.hooks:call("render.hud", function() end, game,
+    { gameWidth = 160, gameHeight = 144, gameX = 0, gameY = 0 })
+  T.eq(#quiet, 0, "and stays quiet once it is turned off")
+
+  local back = Store.config()
+  back.askOnSave = true
+  Store.saveConfig(back)
+end
+
 r.release()
 T.finish("savesync load")

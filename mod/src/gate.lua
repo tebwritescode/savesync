@@ -40,7 +40,7 @@ local Gate = {}
 --- nothing else.
 function Gate.needed()
   if not Sync.configured() then return false end
-  if not Store.config().auto then return false end
+  if Store.config().auto == false then return false end
   return Sync.boot == "checking" or Sync.boot == "offline"
     or Sync.boot == "error"
 end

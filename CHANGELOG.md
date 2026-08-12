@@ -3,6 +3,24 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.1] - 2026-08-12
+
+### Fixed
+- **"Ask on save" asks again**, and **auto sync works**, on any install set up
+  before those settings shipped. The config loader returned the stored table
+  as it found it, backfilling only one field, so a config written before a
+  setting existed had no entry for it -- and a missing setting is not a
+  disabled one. The row that displays `Ask on save` read it as `~= false`,
+  where a missing value shows **ON**; the code that fires the prompt tested it
+  for truth, where a missing value is **OFF**. The row said ON and nothing
+  ever asked.
+  - `Auto sync` had the identical split across three call sites, quietly
+    disabling upload-after-save and the boot check on those same installs
+    while also reading ON.
+  - Every default is now filled in when the config loads, and every reader
+    spells the test the same way its row does, so a setting cannot mean one
+    thing to the screen and another to the code again.
+
 ## [1.11.0] - 2026-08-12
 
 ### Removed

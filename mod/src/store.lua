@@ -78,6 +78,22 @@ function Store.config()
     local body = f.read(CONFIG_PATH)
     local ok, data = pcall(SaveSerializer.decode, body or "")
     if ok and type(data) == "table" and data.device then
+      -- BACKFILL EVERY DEFAULT, not just `keys`.
+      --
+      -- A config written before a setting existed has no field for it, and a
+      -- missing field is not the same as a false one. `askOnSave` displayed
+      -- as `askOnSave ~= false` -- so nil read as ON -- while the code that
+      -- fires the prompt tested it for truth, where nil is OFF. The row said
+      -- ON and nothing ever asked. `auto` had the identical split across
+      -- three call sites, quietly disabling upload-on-save and the boot check
+      -- on every install that had been set up before those settings shipped.
+      --
+      -- Filling the gaps here means one answer to "what is this set to",
+      -- rather than each reader guessing at nil in its own direction.
+      local defaults = blankConfig()
+      for k, v in pairs(defaults) do
+        if data[k] == nil then data[k] = v end
+      end
       data.keys = data.keys or {}
       cache = data
       return cache
@@ -104,6 +120,13 @@ function Store.saveConfig(cfg)
   local wrote = f.write(CONFIG_PATH, encoded)
   f.remove(CONFIG_PATH .. ".tmp")
   return wrote and true or false
+end
+
+-- Test seam: drop the in-process config cache so a suite can prove what
+-- Store.config() does with what is actually ON DISK. The game reads the
+-- config once per launch and has no reason to call this.
+function Store.forgetCache()
+  cache = nil
 end
 
 function Store.forget()

@@ -182,13 +182,16 @@ mod.events:on("save.writing", function()
   -- Any save restarts the autosave clock, the player's own included: someone
   -- who just saved at a Poke Center should not get an autosave a moment later.
   Autosave.noteSaved()
-  if Store.config().auto then Sync.markSaved() end
+  if Store.config().auto ~= false then Sync.markSaved() end
 
   -- A save the PLAYER chose is the one moment they are thinking about their
   -- progress, so it is the right moment to offer to push it up now rather
   -- than in a few seconds. Autosaves and snapshots are excluded: a prompt
   -- after every one of those is the opposite of what they are for.
-  if Sync.configured() and Store.config().askOnSave
+  -- `~= false`, matching the row that displays this: a setting that is
+  -- absent is one that has never been turned off. The two spellings
+  -- disagreeing about nil is what made the row read ON while nothing asked.
+  if Sync.configured() and Store.config().askOnSave ~= false
       and not Autosave.writingOurselves then
     askAfterSave = true
   end
@@ -201,7 +204,7 @@ mod.events:on("game.ready", function()
   -- CONTINUE gate waits on. The title screen is also the only place a
   -- download can be applied, so this is the one sync that can actually fix a
   -- stale save rather than just report one.
-  if Sync.configured() and Store.config().auto then Sync.request(true, true) end
+  if Sync.configured() and Store.config().auto ~= false then Sync.request(true, true) end
 end)
 
 -- Returning to the title after a session is the other moment a deferred
