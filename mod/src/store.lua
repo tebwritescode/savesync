@@ -525,4 +525,103 @@ function Store.restoreBackup(version, key, name)
   return Store.apply(version, key, bytes, "undo")
 end
 
+-- ------------------------------------------------------------------ tidy
+
+-- Cleaning up after the runaway.
+--
+-- REMOVED IN 1.11.0, BACK IN 1.14.1. It was dropped because a button that
+-- deletes save slots is a permanent risk in exchange for a one-time cleanup
+-- -- and at the time it was not even one-time: the stray slots kept coming
+-- back from slot-shaped keys still sitting in the cloud, so tidying was a
+-- losing battle against a live bug. 1.14.0 fixed that at the source, which
+-- is what makes this worth having again.
+--
+-- Builds up to and including v1.9.x keyed an unstamped save by its SLOT,
+-- which is device-local, so every sync cycle failed to match and made
+-- another slot. Players ended up with dozens of them. The keyFor and
+-- slotMap fixes stop it happening; they cannot remove what already exists.
+--
+-- WHAT THIS WILL AND WILL NOT TOUCH. Every runaway slot is a byte-for-byte
+-- copy of the same downloaded save, so duplicates are identifiable exactly,
+-- by content hash, with no guessing about dates or names. One slot per group
+-- survives -- the active one if it is in the group, otherwise the first --
+-- and a slot whose contents are unique is never a duplicate of anything and
+-- is never touched. Deliberately keeping the same file in two slots costs
+-- one of them, which is why nothing runs without the player saying so.
+
+--- What tidying WOULD remove.  Returns rows plus the survivor each is a copy
+--- of, so the screen can say what is about to happen before it happens.
+function Store.tidyPlan()
+  local plan = {}
+  for _, version in ipairs(Store.versions()) do
+    local active = SaveData.activeSlot(version)
+    local groups, order = {}, {}
+    for _, slot in ipairs(SaveData.listSlots(version) or {}) do
+      local rec = slot.exists and Store.readSlot(version, slot.id)
+      if rec and rec.hash then
+        if not groups[rec.hash] then
+          groups[rec.hash] = {}
+          order[#order + 1] = rec.hash
+        end
+        local g = groups[rec.hash]
+        g[#g + 1] = { id = slot.id, rec = rec }
+      end
+    end
+    for _, hash in ipairs(order) do
+      local g = groups[hash]
+      if #g > 1 then
+        -- The active slot survives when it is one of the copies; otherwise
+        -- the first, which is the oldest by registry order.
+        local keep = 1
+        for i, entry in ipairs(g) do
+          if entry.id == active then keep = i break end
+        end
+        for i, entry in ipairs(g) do
+          if i ~= keep then
+            plan[#plan + 1] = {
+              version = version,
+              slotId = entry.id,
+              keepSlot = g[keep].id,
+              name = entry.rec.save and entry.rec.save.player
+                and entry.rec.save.player.name or nil,
+              badges = entry.rec.summary and entry.rec.summary.badges or nil,
+              bytes = entry.rec.bytes,
+              key = entry.rec.key,
+            }
+          end
+        end
+      end
+    end
+  end
+  return plan
+end
+
+--- Carry out a plan.  Every removed slot is backed up first, so a mistake
+--- here is undoable from Restore Previous Save like any other write.
+--- Returns removed, failed.
+function Store.tidyApply(plan)
+  local removed, failed = 0, 0
+  for _, row in ipairs(plan or {}) do
+    local key = row.key or (row.version .. "-tidied")
+    pcall(Store.backup, key, row.bytes, "tidied")
+    local ok = SaveData.deleteSlot(row.version, row.slotId)
+    if ok then
+      removed = removed + 1
+      -- Drop any mapping pointing at a slot that no longer exists, so the
+      -- next apply resolves afresh rather than at a hole.
+      local c = Store.config()
+      if type(c.slotMap) == "table" then
+        local dirty = false
+        for k, v in pairs(c.slotMap) do
+          if v == row.slotId then c.slotMap[k] = nil dirty = true end
+        end
+        if dirty then Store.saveConfig(c) end
+      end
+    else
+      failed = failed + 1
+    end
+  end
+  return removed, failed
+end
+
 return Store

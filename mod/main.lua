@@ -87,6 +87,9 @@ Gate.installAskSave(mod)
 -- screen, and the screen says so.
 local liveGame
 local askAfterSave = false
+-- The HUD's own view of Sync.syncedSeq, so it and the SaveSync screen can
+-- both confirm the same sync without one consuming it from the other.
+local lastSyncSeen = 0
 Sync.canApplyDownload = function()
   if not liveGame or not liveGame.stack then return true end
   for _, state in ipairs(liveGame.stack.states or {}) do
@@ -110,10 +113,9 @@ mod.hooks:wrap("render.hud", function(next, game, viewport)
   -- A sync the player asked for, confirming itself. Sync raises the flag on
   -- the way out of a successful cycle; the HUD is the only thing that can
   -- draw, so it is the only thing that clears it.
-  if Sync.flash then
-    local text = Sync.flash
-    Sync.flash = nil
-    pcall(Autosave.flash, text)
+  if (Sync.syncedSeq or 0) > lastSyncSeen then
+    lastSyncSeen = Sync.syncedSeq
+    pcall(Autosave.flash, "SYNCED")
   end
   pcall(Autosave.draw, mod.ui.Font, viewport)
 

@@ -80,6 +80,7 @@ Sync.deferred = nil          -- a download held back because a game is live
 -- then play on the wrong file, and they deserve to be told before that
 -- rather than after.
 Sync.boot = "off"            -- off | checking | ok | offline | error
+Sync.syncedSeq = 0           -- bumped when a sync the player ASKED for lands
 Sync.bootNote = nil          -- what to tell the player, when it is not "ok"
 
 local op                     -- the single in-flight op, if any
@@ -748,12 +749,18 @@ function Sync.update()
         elseif (r.downloaded or 0) > 0 then Sync.status = "Save downloaded"
         else Sync.status = "Up to date" end
       end
-      -- Read by the HUD, which owns the corner flash. Set only on the way
-      -- out of a SUCCESSFUL cycle the player asked for, so a failure never
-      -- reports itself as a sync.
+      -- A COUNTER, NOT A FLAG.
+      --
+      -- Two surfaces confirm a sync: the HUD corner flash (in-world) and the
+      -- SaveSync screen's message line (when that screen is what the player
+      -- is looking at). A flag is CONSUMED by whichever reads it first, so
+      -- whoever lost the race showed nothing -- and pressing Sync Now from
+      -- the menu, where the screen covers the HUD, could never show anything
+      -- at all. A counter lets each surface compare against its own last
+      -- seen value and neither takes it from the other.
       if Sync.announceNext then
         Sync.announceNext = nil
-        Sync.flash = "SYNCED"
+        Sync.syncedSeq = (Sync.syncedSeq or 0) + 1
       end
       nextIdle = os.time() + IDLE_INTERVAL
     else

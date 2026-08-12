@@ -75,6 +75,9 @@ return function(mod, cfgOpts)
                       visible = VISIBLE, boxBottom = BOX_BOTTOM }
 
       self.view = "main"
+      -- Start level with the counter: opening the screen must not replay a
+      -- confirmation for a sync that finished before it was even open.
+      self.syncSeen = Sync.syncedSeq or 0
       self.cursor = 1
       self.scroll = 0
       self.message = nil          -- one-line feedback under the title
@@ -786,7 +789,38 @@ return function(mod, cfgOpts)
               goto_("restoreList")
             end
           end, "main")
+          -- Offered only when there is something to remove, so a tidy
+          -- install never shows a button that would do nothing.
+          local plan = Store.tidyPlan()
+          if #plan > 0 then
+            table.insert(items, #items, { ("Tidy %d copies"):format(#plan),
+              function()
+                self.pendingTidy = plan
+                goto_("confirmTidy")
+              end })
+          end
           return items
+        end
+
+        if self.view == "confirmTidy" then
+          return {
+            { "Yes, tidy them", function()
+              local removed, failed = Store.tidyApply(self.pendingTidy)
+              self.pendingTidy = nil
+              self.slotRows = Store.slotOverview(Sync.conflicts)
+              self.page = 1
+              if failed > 0 then
+                say(("Removed %d, %d would not go."):format(removed, failed))
+              else
+                say(("Removed %d copies."):format(removed))
+              end
+              goto_("slots")
+            end },
+            { "No", function()
+              self.pendingTidy = nil
+              goto_("slots")
+            end },
+          }
         end
 
         if self.view == "restorePick" then
@@ -889,6 +923,13 @@ return function(mod, cfgOpts)
         end
 
         if self.view == "preflight" then self:pollPreflight() end
+
+        -- The screen is what the player is looking at when they press Sync
+        -- Now, and it covers the HUD flash entirely -- so it says so itself.
+        if (Sync.syncedSeq or 0) > (self.syncSeen or 0) then
+          self.syncSeen = Sync.syncedSeq
+          say("Synced.")
+        end
 
         if self.cleanOp then
           local st, value = self.cleanOp:poll()
@@ -1170,6 +1211,9 @@ return function(mod, cfgOpts)
         elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
           hdr("Restore this")
           hdr("snapshot?")
+        elseif self.view == "confirmTidy" and self.pendingTidy then
+          hdr(("Remove %d duplicate"):format(#self.pendingTidy))
+          hdr("save slots? Each is an exact copy of one being kept, and is backed up first.")
         elseif self.view == "cleanCloud" then
           hdr("Remove save entries")
           hdr("left behind by the old")

@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.14.1] - 2026-08-12
+
+### Fixed
+- **The SYNCED confirmation never appeared.** It was a flag, and a flag is
+  CONSUMED by whichever surface reads it first -- so whoever lost the race
+  showed nothing. Worse, pressing `Sync Now` from the menu could never show
+  anything at all: the only surface reading it was the in-world HUD, which
+  that screen completely covers. It is now a counter each surface compares
+  against its own last-seen value, and the SaveSync screen says `Synced.`
+  itself while it is open.
+
+### Added
+- **Tidy duplicate slots is back**, in `Save files`. It was removed in 1.11.0
+  because a button that deletes save slots is a permanent risk in exchange for
+  a one-time cleanup -- and at the time it was not even one-time: the strays
+  kept returning from slot-shaped keys still sitting in the cloud, so tidying
+  was a losing battle against a live bug. 1.14.0 fixed that at the source,
+  which is what makes it worth having again. Same rules as before: copies are
+  identified exactly by content hash, one slot per group survives (the active
+  one if it is among them), a slot whose contents are unique is never touched,
+  and every removal is backed up first.
+
 ## [1.14.0] - 2026-08-12
 
 ### Fixed
