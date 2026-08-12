@@ -20,6 +20,10 @@ local P = {}
 
 P.id = "dropbox"
 P.label = "Dropbox"
+-- HTTPS ONLY. A device whose only transport is luasocket (LOVE bundles it;
+-- luasec, which would add TLS, it does not) cannot reach this service at all,
+-- so Set Up hides it there rather than offering a sign-in that cannot finish.
+P.needsTls = true
 P.blurb = "Uses one folder in your Dropbox. Nothing else is visible."
 P.linkStyle = "browser"         -- open a page, paste the code back
 P.needsClientId = true

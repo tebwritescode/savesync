@@ -125,9 +125,27 @@ do
     screen.cursor = 1
     pressed.a = true
     T.check(pcall(screen.update, screen, 0.016), "update runs on A")
-    -- Set Up is the first row on a fresh install; this walks into the
-    -- provider picker, which is where a bad provider table would blow up.
-    T.eq(screen.view, "setup", "A on the first row opens Set Up")
+    -- Set Up is the first row on a fresh install. It walks into the
+    -- PREFLIGHT, not straight to the provider picker: a sign-in is only
+    -- offered once there is a transport and a working connection, because
+    -- some builds (Phosphor on iOS) ship no way to reach the network at all
+    -- and a browser round trip there can never complete.
+    T.eq(screen.view, "preflight", "A on the first row opens the preflight")
+    T.check(type(screen.preflight) == "table", "and starts a preflight")
+    -- This harness has no love.thread and no TLS module, which is exactly
+    -- the shape of the platform that reported the bug.
+    T.eq(screen.preflight.state, "noTransport",
+      "a build with no transport says so rather than offering a sign-in")
+
+    -- The provider list itself hides what cannot work here. GitHub and
+    -- Dropbox are HTTPS-only; with no TLS they must not be offered.
+    screen.view = "setup"
+    local labels = {}
+    for _, label in ipairs(screen:menuLabels()) do labels[label] = true end
+    T.check(not labels["GitHub"], "GitHub is hidden with no TLS transport")
+    T.check(not labels["Dropbox"], "Dropbox is hidden with no TLS transport")
+    T.check(labels["My own server"] ~= nil or labels["Use a setup code"] ~= nil,
+      "but a reachable option is still offered")
     pressed.a = false
     T.check(pcall(screen.update, screen, 0.016), "the provider list builds")
 

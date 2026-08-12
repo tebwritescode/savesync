@@ -38,6 +38,17 @@ local function loadHttp(env)
       if env.https == nil then error("module 'https' not found", 2) end
       return env.https
     end
+    if name == "socket.http" then
+      if env.socket == nil then error("module 'socket.http' not found", 2) end
+      return env.socket
+    end
+    if name == "ltn12" then
+      if env.socket == nil then error("module 'ltn12' not found", 2) end
+      return {
+        source = { string = function(b) return b end },
+        sink = { table = function(t) return t end },
+      }
+    end
     if name:sub(1, 5) == "love." then return true end
     return realRequire(name)
   end
@@ -171,6 +182,55 @@ do
   check("and does NOT run inline", not Http.isInline())
   Http.request({ url = "https://example.com/x" })
   eq("so the inline transport is never touched", rec.url, nil)
+end
+
+
+-- 7. LUASOCKET, which LOVE vendors on every platform including mobile. Plain
+--    HTTP only -- luasec is not bundled, so there is no TLS -- which makes it
+--    useless for GitHub and exactly right for a self-hosted server on a home
+--    network: the one provider a phone with no other transport can still use.
+do
+  local rec = {}
+  local socket = {
+    request = function(t)
+      rec.t = t
+      if t.sink then t.sink[#t.sink + 1] = "from socket" end
+      return 200
+    end,
+  }
+  local Http = loadHttp({ love = fakeLove({ threads = false }),
+                          https = nil, socket = socket })
+  eq("luasocket alone is a transport", Http.available(), true)
+  eq("and reports no failure", Http.unavailableReason(), nil)
+
+  local st = Http.poll(Http.request({
+    method = "PUT",
+    url = "http://192.0.2.10:8787/v1/file/red.sav",
+    headers = { ["Authorization"] = "Bearer srv" },
+    body = "SAVEBYTES",
+  }))
+  eq("a plain-http request succeeds", st.status, "ok")
+  eq("with its code", st.code, 200)
+  eq("and its body", st.body, "from socket")
+
+  local t = rec.t or {}
+  local h = type(t.headers) == "table" and t.headers or {}
+  eq("the method survives", t.method, "PUT")
+  eq("the auth header survives -- the Android bridge cannot do this",
+    h["Authorization"], "Bearer srv")
+  -- Without Content-Length the far end waits for a body that never ends.
+  eq("a body is given its length", h["Content-Length"], "9")
+end
+
+-- 8. luasocket cannot do TLS, so an https:// URL must NOT be handed to it.
+do
+  local rec = {}
+  local socket = { request = function(t) rec.t = t return 200 end }
+  local Http = loadHttp({ love = fakeLove({ threads = false }),
+                          https = nil, socket = socket })
+  local st = Http.poll(Http.request({ url = "https://api.github.com/gists" }))
+  eq("an https URL is refused when only luasocket exists", st.status, "error")
+  eq("and luasocket was never called", rec.t, nil)
 end
 
 print(("%d passed, %d failed"):format(passed, failed))

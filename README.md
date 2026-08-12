@@ -76,6 +76,27 @@ code — so the rules about where your progress lives stay in one place.
 | Works offline and retries later | ✅ |
 | Google Drive | 🔜 |
 
+## Where it runs
+
+Syncing needs a way out to the network, and which of those a build has depends
+on how it was compiled.
+
+| | |
+|---|---|
+| Windows, macOS, Linux | Everything works |
+| Android | Under test |
+| Steam Deck / desktop handhelds | Everything works |
+| Builds without network support | Saves stay on the device |
+
+Auto save, snapshots and Restore Previous Save work everywhere, because they
+never touch the network — a build that cannot sync is still a build that
+protects your progress locally.
+
+**The iOS Phosphor build ships without network support**, so SaveSync runs
+there in its local form. Set Up says so plainly instead of walking you into a
+sign-in that cannot finish; `Why not?` on that screen lists exactly what the
+device offers, which is what to send along if you want this looked at.
+
 ## Running your own server
 
 If you would rather your saves lived on hardware you own:

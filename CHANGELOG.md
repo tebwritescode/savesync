@@ -3,6 +3,43 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] - 2026-08-12
+
+### Added
+- **Set Up checks before it offers a sign-in**, in two steps. First, can this
+  app reach the network at all -- some builds ship no transport whatsoever,
+  and offering a sign-in there walks the player through a browser round trip
+  that can never complete. Then, is there actually a connection right now,
+  because "your sign-in did not work" is a far worse thing to be told than
+  "this device is offline". The provider list appears only when both hold.
+  - A device with no transport gets **`Why not?`**, which lists what it
+    actually offers: threads, TLS, sockets, curl, bridge, OS and LÖVE version.
+    What a build can do depends on which optional pieces it was compiled with,
+    which is not knowable from a desktop -- so the device reports it rather
+    than being guessed at.
+  - Being offline offers `Try again` and `Set up anyway`, since a check is a
+    courtesy and not a lock.
+- **luasocket transport.** LÖVE vendors it on every platform including mobile,
+  and unlike the Android GET bridge it carries real headers and bodies. It is
+  plain HTTP only -- luasec is not bundled, so there is no TLS -- which makes
+  it exactly right for a self-hosted server on a home network.
+- **Providers this device cannot reach are hidden** rather than offered and
+  then failing: GitHub and Dropbox are HTTPS-only, so a build whose only
+  transport is luasocket shows the self-hosted options alone.
+
+### Fixed
+- **`Read full message` now appears on the provider screen too.** A failed
+  sign-in says why and returns there, where the reason was cut to four lines
+  with no way to open it -- the player was told to read a message they had no
+  route to. Reaching it meant going Back to the main screen, by which point
+  the message had often been replaced.
+
+### Documented
+- **Where it runs**, in the README. Auto save, snapshots and Restore Previous
+  Save work everywhere because they never touch the network. The iOS Phosphor
+  build ships without network support, so SaveSync runs there in its local
+  form and says so plainly.
+
 ## [1.12.0] - 2026-08-12
 
 ### Fixed

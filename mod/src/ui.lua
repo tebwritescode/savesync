@@ -34,6 +34,7 @@ local Providers = SAVESYNC_INCLUDE("src/providers/init.lua")
 local Util = SAVESYNC_INCLUDE("src/util.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
+local Http = SAVESYNC_INCLUDE("src/http.lua")
 
 -- THE LAYOUT BUDGET, in one place.
 --
@@ -262,19 +263,32 @@ return function(mod, cfgOpts)
         return rows
       end
 
-      local function mainItems()
-        local items = {}
-        -- Only offered when there is genuinely more text than fits: a row
-        -- that is always present but usually says nothing is worse than no
-        -- row at all on a screen this small.
+      -- Offered on any screen that can show a message too long for the
+      -- header's four lines -- not only the main one.
+      --
+      -- IT USED TO BE MAIN-ONLY. A failed sign-in says why and returns to the
+      -- PROVIDER LIST, where the reason was cut to four lines with no way to
+      -- open it: the player was told to read a message they had no route to.
+      -- Reaching it meant going Back to main, by which point the message had
+      -- often been replaced.
+      --
+      -- Only added when there is genuinely more text than fits: a row that is
+      -- always present but usually says nothing is worse than no row at all
+      -- on a screen this small.
+      local function readerRow(items)
         local long = longText()
         if long then
           items[#items + 1] = { "Read full message", function()
             self:openReader("MESSAGE", long)
           end }
         end
+        return items
+      end
+
+      local function mainItems()
+        local items = readerRow({})
         if not Sync.configured() then
-          items[#items + 1] = { "Set Up", function() goto_("setup") end }
+          items[#items + 1] = { "Set Up", function() self:beginPreflight() end }
           items[#items + 1] = autosaveRow()
           for _, row in ipairs(snapshotRows()) do items[#items + 1] = row end
           items[#items + 1] = { "Restore Old Save", function()
@@ -321,10 +335,99 @@ return function(mod, cfgOpts)
         return items
       end
 
+      -- BEFORE ANY SIGN-IN SCREEN, in two steps.
+      --
+      -- 1. CAN THIS APP REACH THE NETWORK AT ALL? Some builds ship no
+      --    transport whatsoever -- no worker threads, no TLS module, no
+      --    sockets. Offering a sign-in there walks the player through a
+      --    browser round trip that cannot possibly complete. Phosphor on iOS
+      --    is exactly this case.
+      -- 2. IS THERE ACTUALLY AN INTERNET CONNECTION? A transport that exists
+      --    still fails on a plane or behind a captive portal, and "your sign
+      --    in did not work" is a much worse thing to be told than "this
+      --    device is offline".
+      --
+      -- Only when both hold does the provider list appear.
+      local PROBE_URL = "https://api.github.com/zen"
+
+      function self:beginPreflight()
+        if not Http.available() then
+          self.preflight = { state = "noTransport" }
+          goto_("preflight")
+          return
+        end
+        if not Http.tlsCapable() then
+          -- Nothing secure can be reached, so there is no useful probe to
+          -- run: go straight in, where the list shows only what works here.
+          self.preflight = { state = "ok" }
+          goto_("setup")
+          return
+        end
+        self.preflight = { state = "checking", job = Http.request({
+          url = PROBE_URL,
+          headers = { ["Accept"] = "text/plain" },
+        }) }
+        goto_("preflight")
+      end
+
+      function self:pollPreflight()
+        local pf = self.preflight
+        if not (pf and pf.job) then return end
+        local st = Http.poll(pf.job)
+        if st.status == "pending" then return end
+        Http.release(pf.job)
+        pf.job = nil
+        -- Any answer at all proves the connection; the CONTENT is not the
+        -- point, so an odd status code is still online.
+        if st.status == "ok" then
+          pf.state = "ok"
+          goto_("setup")
+        else
+          pf.state = "offline"
+          pf.detail = st.err
+        end
+      end
+
+      local function preflightItems()
+        local pf = self.preflight or {}
+        if pf.state == "checking" then
+          return { { "Cancel", function()
+            if pf.job then Http.release(pf.job) end
+            self.preflight = nil
+            goto_("main")
+          end } }
+        end
+        if pf.state == "noTransport" then
+          local items = { { "Why not?", function()
+            self:openReader("NETWORK", Http.diagnostics())
+          end } }
+          items[#items + 1] = { "Back", function()
+            self.preflight = nil
+            goto_("main")
+          end }
+          return items
+        end
+        -- offline
+        return {
+          { "Try again", function() self:beginPreflight() end },
+          { "Set up anyway", function() goto_("setup") end },
+          { "Back", function()
+            self.preflight = nil
+            goto_("main")
+          end },
+        }
+      end
+
       local function setupItems()
-        local items = {}
+        local items = readerRow({})
+        local tls = Http.tlsCapable()
         for _, p in ipairs(Providers.choosable()) do
-          items[#items + 1] = { p.label, function() self:startLink(p) end }
+          -- A provider this device cannot reach is left out rather than
+          -- offered and then failing: GitHub and Dropbox are HTTPS-only, and
+          -- a build whose only transport is luasocket has no TLS at all.
+          if tls or not p.needsTls then
+            items[#items + 1] = { p.label, function() self:startLink(p) end }
+          end
         end
         items[#items + 1] = { "Use a setup code", function()
           self.link = { pasteOnly = true }
@@ -545,6 +648,7 @@ return function(mod, cfgOpts)
         if self.view == "reader" then return {} end
         if self.view == "main" then return mainItems() end
         if self.view == "setup" then return setupItems() end
+        if self.view == "preflight" then return preflightItems() end
         if self.view == "pair" then return pairItems() end
         if self.view == "conflict" then return conflictItems() end
         if self.view == "disconnect" then
@@ -711,6 +815,19 @@ return function(mod, cfgOpts)
         return { { "Back", function() goto_("main") end } }
       end
 
+      -- Test seam: the labels the current view is offering.  Which rows a
+      -- screen shows IS the behaviour under test for anything that hides an
+      -- option (a provider this device cannot reach, a row that only appears
+      -- when there is something to say), and a headless suite has no other
+      -- way to see them.  The game never calls this.
+      function self:menuLabels()
+        local out = {}
+        for _, row in ipairs(currentItems() or {}) do
+          out[#out + 1] = tostring(row[1])
+        end
+        return out
+      end
+
       local function clampScroll(count)
         self.scroll = math.min(self.scroll, math.max(0, count - VISIBLE))
         if self.cursor - self.scroll > VISIBLE then
@@ -730,6 +847,8 @@ return function(mod, cfgOpts)
             goto_("conflict")
           end
         end
+
+        if self.view == "preflight" then self:pollPreflight() end
 
         if self.linkOp then
           local st, value = self.linkOp:poll()
@@ -958,6 +1077,22 @@ return function(mod, cfgOpts)
         elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
           hdr("Restore this")
           hdr("snapshot?")
+        elseif self.view == "preflight" then
+          local pf = self.preflight or {}
+          if pf.state == "checking" then
+            hdr("Checking your")
+            hdr("connection...")
+          elseif pf.state == "noTransport" then
+            hdr("This app has no way")
+            hdr("to reach the")
+            hdr("internet.")
+            hdr("Saves stay on this")
+          else
+            hdr("Cannot reach the")
+            hdr("internet right now.")
+            hdr("Check your")
+            hdr("connection.")
+          end
         elseif self.view == "disconnect" then
           hdr("Stop syncing here?")
           hdr("Your saves stay.")

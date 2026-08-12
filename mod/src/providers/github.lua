@@ -24,6 +24,10 @@ local P = {}
 
 P.id = "github"
 P.label = "GitHub"
+-- HTTPS ONLY. A device whose only transport is luasocket (LOVE bundles it;
+-- luasec, which would add TLS, it does not) cannot reach this service at all,
+-- so Set Up hides it there rather than offering a sign-in that cannot finish.
+P.needsTls = true
 P.blurb = "Free, no limits at this size. Recommended."
 P.linkStyle = "device"          -- the UI shows a code and a URL
 P.needsClientId = true

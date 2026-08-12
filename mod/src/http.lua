@@ -130,6 +130,48 @@ local function cfgValue(s)
   return '"' .. s .. '"'
 end
 
+-- Send through luasocket, which LOVE vendors on every platform including
+-- mobile.  PLAIN HTTP ONLY -- luasec is not bundled, so there is no TLS here.
+-- That makes this useless for GitHub and Dropbox and exactly right for a
+-- self-hosted server on a home network, which is the one provider a phone
+-- with no other transport can still use.
+local function trySocket(job)
+  local okHttp, http = pcall(require, "socket.http")
+  local okLtn, ltn12 = pcall(require, "ltn12")
+  if not (okHttp and okLtn and type(http) == "table" and type(ltn12) == "table") then
+    return false
+  end
+  if type(job.url) ~= "string" or job.url:sub(1, 7) ~= "http://" then
+    return false
+  end
+  local headers = {}
+  for _, line in ipairs(job.headers or {}) do
+    local k, v = tostring(line):match("^([^:]+):%s*(.*)$")
+    if k then headers[k] = v end
+  end
+  headers["User-Agent"] = headers["User-Agent"] or job.userAgent
+  if job.accept then headers["Accept"] = headers["Accept"] or job.accept end
+  -- A body needs its length, or the far end waits for more of it forever.
+  if job.body and #job.body > 0 then
+    headers["Content-Length"] = tostring(#job.body)
+  end
+
+  local sink = {}
+  local ok, code = pcall(http.request, {
+    url = job.url,
+    method = (job.method or "GET"):upper(),
+    headers = headers,
+    source = job.body and ltn12.source.string(job.body) or nil,
+    sink = ltn12.sink.table(sink),
+  })
+  if not ok or type(code) ~= "number" then
+    post({ id = job.id, ok = false, err = "could not reach that address" })
+    return true
+  end
+  post({ id = job.id, ok = true, code = code, body = table.concat(sink) })
+  return true
+end
+
 -- Send through lua-https.  Returns true when it handled the job.
 local function tryHttps(job)
   if not https then return false end
@@ -167,6 +209,7 @@ end
 
 local function doRequest(job)
   if tryHttps(job) then return end
+  if trySocket(job) then return end
   if not HostShell then
     post({ id = job.id, ok = false, err = "no transport" })
     return
@@ -373,20 +416,77 @@ end
 -- frame during a sign-in is a hitch, and no transport at all is a missing
 -- feature. Requests here are a few kilobytes and happen on setup or a few
 -- times a minute, so this is used ONLY when there are no workers to use.
+-- The main chunk's own handle on HostShell -- the one at the top of this file
+-- lives inside the WORKER SOURCE string and does not exist out here.
+--
+-- GUARDED, like every other global reached at load time here. `love` is
+-- absent in the headless suites, and an unguarded reach for it takes the
+-- whole module down on load -- which is exactly how the iOS `os.getenv`
+-- crash worked. Anything touched at load must survive the smallest
+-- environment this file is ever loaded into.
+local HostShellMain do
+  local fs = love and love.filesystem
+  if fs and type(fs.load) == "function" then
+    local ok, chunk = pcall(fs.load, "src/core/HostShell.lua")
+    if ok and type(chunk) == "function" then
+      local ok2, mod = pcall(chunk)
+      HostShellMain = ok2 and type(mod) == "table" and mod or nil
+    end
+  end
+end
+
 local inlineHttps do
   local ok, mod = pcall(require, "https")
   inlineHttps = ok and type(mod) == "table" and type(mod.request) == "function"
     and mod or nil
 end
 
+-- luasocket, which LOVE vendors on every platform including mobile. Plain
+-- HTTP only -- luasec is not bundled, so there is no TLS -- which makes it
+-- useless for GitHub and Dropbox and exactly right for a self-hosted server
+-- on a home network: the one provider a phone with no other transport can
+-- still reach.
+local inlineSocket do
+  local okHttp, http = pcall(require, "socket.http")
+  local okLtn, ltn12 = pcall(require, "ltn12")
+  if okHttp and okLtn and type(http) == "table" and type(ltn12) == "table" then
+    inlineSocket = { http = http, ltn12 = ltn12 }
+  end
+end
+
 local function canInline(url)
-  -- lua-https speaks TLS only, so a plain-http self-hosted server cannot come
-  -- through here and says so rather than failing obscurely.
-  return inlineHttps ~= nil and type(url) == "string"
-    and url:sub(1, 8) == "https://"
+  if type(url) ~= "string" then return false end
+  -- TLS goes to lua-https, plain HTTP to luasocket. Neither can do the
+  -- other's job, so a URL with no matching transport is refused here rather
+  -- than failing obscurely further down.
+  if url:sub(1, 8) == "https://" then return inlineHttps ~= nil end
+  if url:sub(1, 7) == "http://" then return inlineSocket ~= nil end
+  return false
 end
 
 local function runInline(id, req, headerMap)
+  if req.url:sub(1, 7) == "http://" then
+    local sink = {}
+    local headers = {}
+    for k, v in pairs(headerMap) do headers[k] = v end
+    if req.body and #req.body > 0 then
+      headers["Content-Length"] = tostring(#req.body)
+    end
+    local ok, code = pcall(inlineSocket.http.request, {
+      url = req.url,
+      method = (req.method or "GET"):upper(),
+      headers = headers,
+      source = req.body and inlineSocket.ltn12.source.string(req.body) or nil,
+      sink = inlineSocket.ltn12.sink.table(sink),
+    })
+    if not ok or type(code) ~= "number" then
+      jobs[id].status, jobs[id].err = "error", "could not reach that address"
+      return
+    end
+    jobs[id].status, jobs[id].code = "ok", code
+    jobs[id].body = table.concat(sink)
+    return
+  end
   local ok, code, body = pcall(inlineHttps.request, req.url, {
     method = (req.method or "GET"):upper(),
     headers = headerMap,
@@ -454,19 +554,82 @@ end
 --- Can this device reach the network at all, by either route?
 function Http.available()
   if ensureWorkers() then return true end
-  return inlineHttps ~= nil
+  return inlineHttps ~= nil or inlineSocket ~= nil
 end
 
 function Http.unavailableReason()
   if ensureWorkers() then return nil end
-  if inlineHttps then return nil end
+  if inlineHttps or inlineSocket then return nil end
   return unavailableReason
 end
 
 --- True when requests run on the main thread, so the UI can warn that the
 --- game will pause during a transfer rather than look frozen.
 function Http.isInline()
-  return not ensureWorkers() and inlineHttps ~= nil
+  return not ensureWorkers() and (inlineHttps ~= nil or inlineSocket ~= nil)
+end
+
+--- Can this device do TLS at all?  GitHub and Dropbox are HTTPS-only, so a
+--- device without it can reach a self-hosted server and nothing else.
+--- curl and lua-https both do TLS; luasocket does not (no luasec is bundled).
+function Http.tlsCapable()
+  if inlineHttps ~= nil then return true end
+  if HostShellMain and HostShellMain.haveCurl then
+    local ok, v = pcall(HostShellMain.haveCurl)
+    if ok and v == true then return true end
+  end
+  return false
+end
+
+--- What this device actually offers, in plain words.
+---
+--- WHY THIS EXISTS. "No provider works" on a phone is unanswerable from a
+--- desktop: the transport depends on which optional pieces that particular
+--- LOVE build shipped, and guessing cost a release. This reports what is
+--- really there so the answer comes from the device rather than from a
+--- theory about it.
+function Http.diagnostics()
+  local love_ = love or {}
+  local function yn(v) return v and "yes" or "no" end
+
+  local hasThread = not not (love_.thread and love_.thread.newThread)
+  local socket = inlineSocket
+  local curl = false
+  if HostShellMain and HostShellMain.haveCurl then
+    local ok, v = pcall(HostShellMain.haveCurl)
+    curl = ok and v == true
+  end
+  local bridge = not not (love_.system and love_.system.httpDownload)
+
+  local osName = "?"
+  if love_.system and love_.system.getOS then
+    local ok, v = pcall(love_.system.getOS)
+    if ok then osName = tostring(v) end
+  end
+  local ver = "?"
+  if love_.getVersion then
+    local ok, a, b, c = pcall(love_.getVersion)
+    if ok then ver = ("%s.%s.%s"):format(tostring(a), tostring(b), tostring(c)) end
+  end
+
+  local lines = {
+    "device: " .. osName,
+    "love: " .. ver,
+    "threads: " .. yn(hasThread),
+    "https: " .. yn(inlineHttps),
+    "sockets: " .. yn(socket),
+    "curl: " .. yn(curl),
+    "bridge: " .. yn(bridge),
+    "",
+  }
+  if Http.available() then
+    lines[#lines + 1] = hasThread and "Using background workers."
+      or "Running on the main thread; the game pauses briefly per request."
+  else
+    lines[#lines + 1] = "No way to reach the network on this device."
+    lines[#lines + 1] = "Send this list to the mod author."
+  end
+  return table.concat(lines, " | ")
 end
 
 --- Stop the pool.  Called from the mod's quit path so LÖVE is not left
