@@ -48,6 +48,13 @@ local ROWS_TOP, ROW_COUNT = 72, 5
 local VISIBLE = ROW_COUNT    -- cursor window; a mismatch scrolls it out of sight
 local WRAP_WIDTH = 19        -- columns available to text starting at x=8
 
+-- Restore lists are PAGED rather than scrolled. Ten backups plus ten cloud
+-- versions is a long ribbon to drag a cursor through on a d-pad, and a player
+-- picking a restore point wants to see a handful and step, not hunt. Four
+-- entries plus "More" and "Back" is exactly what fits without the list
+-- running past the border.
+local PAGE_SIZE = 4
+
 return function(mod, cfgOpts)
   mod.content.screens:register("SaveSync", {
     new = function(game)
@@ -135,6 +142,9 @@ return function(mod, cfgOpts)
         self.view = view
         self.cursor = 1
         self.scroll = 0
+        -- A new view always starts on page one; carrying a page number across
+        -- lists would open the cloud history on page three of the local one.
+        self.page = 1
       end
 
       -- ------------------------------------------------- the reader
@@ -479,6 +489,39 @@ return function(mod, cfgOpts)
 
       -- ---------------------------------------------------- update
 
+      -- Build the rows for one page of `list`, plus the navigation. `onPick`
+      -- receives the row itself, so callers never do index arithmetic against
+      -- a paged list -- getting that wrong restores the wrong save.
+      local function pagedItems(list, onPick, backView)
+        list = list or {}
+        local pages = math.max(1, math.ceil(#list / PAGE_SIZE))
+        self.page = math.min(math.max(self.page or 1, 1), pages)
+        local items = {}
+        local first = (self.page - 1) * PAGE_SIZE + 1
+        for i = first, math.min(first + PAGE_SIZE - 1, #list) do
+          local row = list[i]
+          items[#items + 1] = { row.label or row.when or "?",
+                                function() onPick(row) end }
+        end
+        if #list == 0 then
+          items[#items + 1] = { "Nothing saved yet", function() goto_(backView) end }
+        end
+        if pages > 1 then
+          items[#items + 1] = { ("More (%d/%d)"):format(self.page, pages),
+            function()
+              -- Wraps, so one button walks the whole list and a player can
+              -- never strand themselves on the last page.
+              self.page = (self.page % pages) + 1
+              self.cursor = 1
+            end }
+        end
+        items[#items + 1] = { "Back", function()
+          self.page = 1
+          goto_(backView)
+        end }
+        return items
+      end
+
       local function currentItems()
         if self.view == "reader" then return {} end
         if self.view == "main" then return mainItems() end
@@ -597,23 +640,12 @@ return function(mod, cfgOpts)
           return items
         end
         if self.view == "restoreList" then
-          local items = {}
-          for _, row in ipairs(self.list or {}) do
-            -- "YYYY-MM-DD HH:MM replaced" does not fit a 17-character row.
-            -- The list is newest-first and only ever spans a handful of
-            -- months, not years, so the year is the part safe to drop; the
-            -- tag is capped to four characters rather than relying on the
-            -- fallback :sub() in the draw loop to cut a real word in half.
-            -- Precomputed when the list was built; see restoreLabel.
-            local label = row.label or "?"
-            items[#items + 1] = { label, function()
-              self.pendingRestore = row
-              goto_("confirmRestore")
-            end }
-          end
-          items[#items + 1] = { "Back", function() goto_("restorePick") end }
-          return items
+          return pagedItems(self.list, function(row)
+            self.pendingRestore = row
+            goto_("confirmRestore")
+          end, self.restoreKey and "slots" or "restorePick")
         end
+
         if self.view == "confirmRestore" then
           return {
             { "Yes, restore it", function()
@@ -623,16 +655,12 @@ return function(mod, cfgOpts)
           }
         end
         if self.view == "snapList" then
-          local items = {}
-          for _, row in ipairs(self.list or {}) do
-            items[#items + 1] = { row.when, function()
-              self.pendingSnapRestore = row
-              goto_("confirmSnapRestore")
-            end }
-          end
-          items[#items + 1] = { "Back", function() goto_("main") end }
-          return items
+          return pagedItems(self.list, function(row)
+            self.pendingSnapRestore = row
+            goto_("confirmSnapRestore")
+          end, "main")
         end
+
         if self.view == "confirmSnapRestore" then
           return {
             { "Yes, restore it", function()

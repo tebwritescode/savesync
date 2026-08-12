@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-08-12
+
+### Added
+- **Restore lists are paged**, four at a time with a `More (2/3)` row, rather
+  than one long ribbon to drag a cursor through on a d-pad. Someone picking a
+  restore point wants to see a handful and step. The More row **wraps**, so
+  one button walks the whole list and nobody strands themselves on the last
+  page.
+- Picking an entry is tested against the row itself rather than its index on
+  screen, because the bug a paged list invites is restoring the save one page
+  off from the one you chose.
+
 ## [1.8.1] - 2026-08-12
 
 ### Fixed

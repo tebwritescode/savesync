@@ -315,6 +315,42 @@ do
       calls = 0
       for _ = 1, 30 do pcall(screen.update, screen, 0.016) end
       T.eq(calls, 0, "30 frames of the restore list read the disk zero times")
+
+      -- PAGING. Ten entries must not become ten rows on a 160x144 screen.
+      -- With four per page the rows are: 4 entries, More, Back.
+      screen.page = 1
+      screen.cursor = 5                       -- the More row
+      pressed.a = true
+      pcall(screen.update, screen, 0.016)
+      pressed.a = false
+      T.eq(screen.page, 2, "the More row advances to page two")
+      T.eq(screen.view, "restoreList", "and stays in the list")
+
+      -- It wraps, so one button walks the whole list and nobody is stranded
+      -- on the last page with no way forward.
+      screen.cursor = 5
+      pressed.a = true
+      pcall(screen.update, screen, 0.016)
+      pressed.a = false
+      T.eq(screen.page, 3, "and to page three")
+      -- The last page holds the remainder (2 of 10), so More sits directly
+      -- after those two rather than at a fixed index.
+      screen.cursor = 3
+      pressed.a = true
+      pcall(screen.update, screen, 0.016)
+      pressed.a = false
+      T.eq(screen.page, 1, "then wraps back to page one")
+
+      -- Picking an entry must restore THAT entry, not the row index -- the
+      -- bug a paged list invites is off-by-a-page.
+      screen.page = 2
+      screen.cursor = 1
+      pressed.a = true
+      pcall(screen.update, screen, 0.016)
+      pressed.a = false
+      T.eq(screen.view, "confirmRestore", "picking an entry opens the confirm")
+      T.eq(screen.pendingRestore and screen.pendingRestore.name, "n5",
+        "and it is the fifth entry, the first on page two")
     else
       T.check(false, "screen constructs for the per-frame budget test")
     end
