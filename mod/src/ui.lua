@@ -628,38 +628,7 @@ return function(mod, cfgOpts)
               goto_("restoreList")
             end
           end, "main")
-          -- Offered only when there is something to do, so a tidy install
-          -- never shows a button that would do nothing.
-          local plan = Store.tidyPlan()
-          if #plan > 0 then
-            table.insert(items, #items, { ("Tidy %d copies"):format(#plan),
-              function()
-                self.pendingTidy = plan
-                goto_("confirmTidy")
-              end })
-          end
           return items
-        end
-
-        if self.view == "confirmTidy" then
-          return {
-            { "Yes, tidy them", function()
-              local removed, failed = Store.tidyApply(self.pendingTidy)
-              self.pendingTidy = nil
-              self.slotRows = Store.slotOverview(self.conflicts)
-              self.page = 1
-              if failed > 0 then
-                say(("Removed %d, %d would not go."):format(removed, failed))
-              else
-                say(("Removed %d copies."):format(removed))
-              end
-              goto_("slots")
-            end },
-            { "No", function()
-              self.pendingTidy = nil
-              goto_("slots")
-            end },
-          }
         end
 
         if self.view == "restorePick" then
@@ -968,12 +937,6 @@ return function(mod, cfgOpts)
         elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
           hdr("Restore this")
           hdr("snapshot?")
-        elseif self.view == "confirmTidy" and self.pendingTidy then
-          hdr(("Remove %d duplicate"):format(#self.pendingTidy))
-          hdr("save slots?")
-          hdr("Each is an exact copy")
-          hdr("of one being kept, and")
-          hdr("is backed up first.")
         elseif self.view == "disconnect" then
           hdr("Stop syncing here?")
           hdr("Your saves stay.")

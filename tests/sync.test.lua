@@ -135,17 +135,6 @@ local function newDevice(name)
       slots.list[#slots.list + 1] = id
       return id
     end,
-    deleteSlot = function(version, slotId)
-      local idx
-      for i, id in ipairs(slots.list) do
-        if id == slotId then idx = i break end
-      end
-      if not idx then return false, "slot not registered" end
-      dev.disk["saves/" .. version .. "/" .. slotId .. ".lua"] = nil
-      table.remove(slots.list, idx)
-      if slots.active == slotId then slots.active = slots.list[1] end
-      return true
-    end,
     setActiveSlot = function(_, id) slots.active = id end,
     writeSlot = function(version, slotId, tbl)
       dev.disk["saves/" .. version .. "/" .. slotId .. ".lua"] = serialize(tbl)
@@ -1124,61 +1113,6 @@ for i = 1, 15 do
 end
 eq("fifteen applies of a legacy-keyed object make exactly one slot",
   #L.saveData.listSlots("red"), baseline + 1)
-
--- 17. TIDYING UP AFTER THE RUNAWAY.
---
--- The fixes above stop new stray slots; they cannot remove the fifty pages
--- a player already has. Tidy removes byte-identical copies only.
-
-local T = newDevice("Device T")
-play(T, { version = "red", player = { name = "KEEP" }, badges = 2,
-          meta = { playthroughId = "KEEPME01", savedAt = 5 } })
-activate(T)
-
--- Simulate the runaway: the same bytes landing in slot after slot.
-local function dupeSave()
-  return { version = "red", player = { name = "DUPE" }, badges = 4,
-           meta = { playthroughId = "DUPE0001", savedAt = 7 } }
-end
-for _ = 1, 6 do
-  local id = T.saveData.createSlot("red")
-  T.saveData.writeSlot("red", id, dupeSave())
-end
--- ...and one slot that is genuinely its own save.
-local uniqueId = T.saveData.createSlot("red")
-T.saveData.writeSlot("red", uniqueId, { version = "red",
-  player = { name = "UNIQUE" }, badges = 8,
-  meta = { playthroughId = "UNIQ0001", savedAt = 8 } })
-
-local before = #T.saveData.listSlots("red")
-local plan = T.Store.tidyPlan()
-eq("five of the six copies are planned for removal", #plan, 5)
-
-for _, row in ipairs(plan) do
-  check("never plans to remove the unique save", row.slotId ~= uniqueId)
-  check("every removal names the copy it keeps", row.keepSlot ~= nil)
-  check("never removes the slot it is keeping", row.slotId ~= row.keepSlot)
-end
-
-local removed, failed = T.Store.tidyApply(plan)
-eq("all five removed", removed, 5)
-eq("none failed", failed, 0)
-eq("slot count drops by exactly five", #T.saveData.listSlots("red"), before - 5)
-
--- The originals survive, and the removals are recoverable.
-local names = {}
-for _, slot in ipairs(T.saveData.listSlots("red")) do
-  local rec = slot.exists and T.Store.readSlot("red", slot.id)
-  if rec then names[rec.save.player.name] = true end
-end
-check("the player's own save is untouched", names["KEEP"] == true)
-check("one copy of the duplicate survives", names["DUPE"] == true)
-check("the unique save is untouched", names["UNIQUE"] == true)
-check("a tidied save is recoverable from backups",
-  #T.Store.listBackups("red-DUPE0001") > 0)
-
--- Idempotent: nothing left to do on a tidy install.
-eq("tidying twice finds nothing the second time", #T.Store.tidyPlan(), 0)
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

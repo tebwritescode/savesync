@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-08-12
+
+### Removed
+- **Tidy duplicate slots.** It shipped in 1.10.x on Gitea only and is gone
+  again: the fix in 1.10.0 stops stray slots being made in the first place,
+  which is the part that needed doing, and a button that deletes save slots
+  is a permanent risk in exchange for a one-time cleanup. Slots are removed
+  from the game's own save-slot screen.
+
 ## [1.10.1] - 2026-08-12
 
 ### Changed
