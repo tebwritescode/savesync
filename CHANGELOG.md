@@ -3,6 +3,30 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.1] - 2026-08-12
+
+### Fixed
+- **The tick meant the wrong thing.** `Connected ✓` was drawn whenever a
+  provider was configured, so a device that could not reach its storage showed
+  it directly above `Offline - will retry` and left the player to work out
+  which of the two to believe. It now means syncing is working.
+- **Header text wraps instead of being chopped.** Every header line was cut at
+  the column width with no ellipsis, so anything longer lost its tail
+  mid-word: `GitHub: tebwritesc`, `Saving to the clou`, `Offline - will ret`.
+  The part that got cut was the part that identified the thing. Long text now
+  flows into the remaining header lines, and only when it runs out of those is
+  anything shortened -- with `...`, so it is visibly unfinished.
+- **The after-save prompt drew its text outside its own box.** `drawBox` takes
+  TILES and `draw` takes PIXELS; mixing them put the box across the bottom
+  half of the screen while its question was drawn in the top quarter, over the
+  world, with the first answer straddling the box's top border.
+- **Online-only rows are hidden while offline.** `Sync Now` and `Pair Device`
+  both need the network the device has just failed to reach, and a row that
+  cannot work reads as something that might fix this. `Try again` takes their
+  place. Everything that works without the network stays put -- Save files,
+  Restore Old Save, auto save and snapshots -- because being offline costs the
+  cloud, not the saves.
+
 ## [1.13.0] - 2026-08-12
 
 ### Added

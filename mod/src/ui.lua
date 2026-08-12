@@ -298,15 +298,38 @@ return function(mod, cfgOpts)
           end }
           return items
         end
-        items[#items + 1] = { "Sync Now", function()
-          Sync.request(true)
-          say("Syncing...")
-        end }
+        -- ONLINE-ONLY ROWS ARE HIDDEN WHILE OFFLINE.
+        --
+        -- `Sync Now` and `Pair Device` both need the network the device has
+        -- just failed to reach. Offering them anyway invites a player to
+        -- press them, wait, and be told again what the header already says.
+        -- A row that cannot work is worse than no row: it reads as something
+        -- that might fix this, and it cannot.
+        --
+        -- Everything that works WITHOUT the network stays exactly where it
+        -- is -- Save files, Restore Old Save, auto save, snapshots -- because
+        -- being offline costs the cloud, not the saves.
+        local offline = Sync.state == "offline" or Sync.state == "error"
+        if not offline then
+          items[#items + 1] = { "Sync Now", function()
+            Sync.request(true)
+            say("Syncing...")
+          end }
+        end
         items[#items + 1] = { "Save files", function()
           self.slotRows = Store.slotOverview(Sync.conflicts)
           goto_("slots")
         end }
-        items[#items + 1] = { "Pair Device", function() goto_("pair") end }
+        if not offline then
+          items[#items + 1] = { "Pair Device", function() goto_("pair") end }
+        else
+          -- One row that DOES something useful here: try the connection
+          -- again, rather than leaving the player to guess when it recovers.
+          items[#items + 1] = { "Try again", function()
+            Sync.request(true)
+            say("Trying again...")
+          end }
+        end
         -- Choose the save FIRST, then a version of it. One flat list across
         -- every playthrough is how ten backups each became forty rows with no
         -- way to tell whose they were.
@@ -1025,13 +1048,38 @@ return function(mod, cfgOpts)
         -- Anything longer than a slot is cut here and reachable in full
         -- through the reader.
         local slot = 0
+        -- WRAP, never chop.
+        --
+        -- This used to cut every header line at WRAP_WIDTH with a plain
+        -- :sub, so anything longer lost its tail MID-WORD and with no sign
+        -- that it had: `GitHub: tebwritesc`, `Saving to the clou`. The part
+        -- that gets cut is exactly the part that identifies the thing --
+        -- which account, which state -- so the line that survived was the
+        -- useless half.
+        --
+        -- Long text now flows into the remaining header slots. Only when it
+        -- runs out of those is anything shortened, and then with "..." so it
+        -- is visibly unfinished and `Read full message` is worth reaching for.
         local function hdr(text)
-          if not text or text == "" or slot >= HEADER_SLOTS then return end
-          Font.draw(tostring(text):sub(1, WRAP_WIDTH), 8, HEADER_TOP + slot * 12)
-          slot = slot + 1
+          if not text or text == "" then return end
+          local lines = Util.wrap(tostring(text), WRAP_WIDTH)
+          for i, line in ipairs(lines) do
+            if slot >= HEADER_SLOTS then return end
+            if slot == HEADER_SLOTS - 1 and i < #lines then
+              line = line:sub(1, math.max(0, WRAP_WIDTH - 3)) .. "..."
+            end
+            Font.draw(line, 8, HEADER_TOP + slot * 12)
+            slot = slot + 1
+          end
         end
 
-        if Sync.configured() and Sync.state ~= "conflict" then
+        -- The tick means SYNCING IS WORKING, not "a provider is configured".
+        -- It used to mean the latter, so a device that could not reach its
+        -- storage drew `Connected ✓` directly above `Offline - will retry`
+        -- and left the player to work out which of the two to believe.
+        local healthy = Sync.state ~= "offline" and Sync.state ~= "error"
+          and Sync.state ~= "conflict"
+        if Sync.configured() and healthy then
           Font.draw("Connected", 16, HEADER_TOP)
           drawTick(92, HEADER_TOP)
           slot = 1

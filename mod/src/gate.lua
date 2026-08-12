@@ -90,15 +90,25 @@ function Gate.installAskSave(mod)
       end
 
       function self:draw()
-        -- A short box at the bottom, the way the vanilla game asks a
-        -- question -- the world stays visible behind it, so this reads as a
-        -- prompt rather than as having been taken somewhere.
-        Font.drawBox(0, 8, 20, 9)
-        Font.draw("Saved.", 16, 20)
-        Font.draw("Send to the cloud", 16, 32)
-        Font.draw("now?", 16, 44)
+        -- A box at the bottom, the way the vanilla game asks a question --
+        -- the world stays visible behind it, so this reads as a prompt
+        -- rather than as having been taken somewhere.
+        --
+        -- EVERY COORDINATE BELOW IS PIXELS EXCEPT drawBox's, WHICH IS TILES.
+        -- Mixing the two put the box across the bottom half of the screen
+        -- while its text was drawn at y=20 -- up in the top quarter, over
+        -- the world, nowhere near the box it belonged to, with the first
+        -- menu row straddling the box's own top border.
+        --
+        -- Box: tile row 8 is y=64, ten tiles tall reaches the screen floor
+        -- at 144. Its border eats 8px, so the usable band is 72..136 --
+        -- which is five 12px rows, exactly what two lines of question and
+        -- three answers need.
+        Font.drawBox(0, 8, 20, 10)
+        Font.draw("Saved. Send to", 16, 72)
+        Font.draw("the cloud now?", 16, 84)
         for i, it in ipairs(items) do
-          local y = 62 + (i - 1) * 12
+          local y = 96 + (i - 1) * 12
           Font.draw(it[1], 28, y)
           if self.cursor == i then Font.drawCode(Theme.cursor, 20, y) end
         end
