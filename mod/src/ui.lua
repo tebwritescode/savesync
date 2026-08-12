@@ -274,8 +274,9 @@ return function(mod, cfgOpts)
           items[#items + 1] = autosaveRow()
           for _, row in ipairs(snapshotRows()) do items[#items + 1] = row end
           items[#items + 1] = { "Restore Old Save", function()
-            self.list = nil
-            goto_("restorePick")
+            self.slotRows = Store.slotOverview(Sync.conflicts)
+            self.restoreFlow = true
+            goto_("slots")
           end }
           return items
         end
@@ -288,9 +289,13 @@ return function(mod, cfgOpts)
           goto_("slots")
         end }
         items[#items + 1] = { "Pair Device", function() goto_("pair") end }
+        -- Choose the save FIRST, then a version of it. One flat list across
+        -- every playthrough is how ten backups each became forty rows with no
+        -- way to tell whose they were.
         items[#items + 1] = { "Restore Old Save", function()
-          self.list = nil
-          goto_("restorePick")
+          self.slotRows = Store.slotOverview(Sync.conflicts)
+          self.restoreFlow = true
+          goto_("slots")
         end }
         items[#items + 1] = autosaveRow()
         for _, row in ipairs(snapshotRows()) do items[#items + 1] = row end
@@ -592,39 +597,82 @@ return function(mod, cfgOpts)
           return items
         end
         if self.view == "slots" then
-          local items = {}
+          -- Paginated like every other list here: an install still carrying
+          -- the stray slots the old key scheme created has dozens of these,
+          -- and a list nobody can reach the end of is not a list.
+          local rows = {}
           for _, row in ipairs(self.slotRows or {}) do
             -- "RED 1 synced" fits the 17-column budget where the slot id and
             -- a full status word would not.
             local n = tostring(row.slotId or "?"):match("(%d+)$") or "?"
-            local label = ("%s %s %s"):format(
+            row.label = ("%s %s %s"):format(
               tostring(row.version):upper():sub(1, 6), n, row.status)
-            items[#items + 1] = { label, function()
-              self.restoreKey = row.key
+            rows[#rows + 1] = row
+          end
+          local items = pagedItems(rows, function(row)
+            if not row.key then
+              -- A save the engine has not stamped yet has no versions to
+              -- restore from, because it has never synced. Say so.
+              say("Save in game once to sync this file.")
+              return
+            end
+            self.restoreKey = row.key
+            if self.restoreFlow then
+              -- Came from Restore Old Save: now ask WHERE from, scoped to
+              -- the save just chosen.
+              goto_("restorePick")
+            else
+              -- Came from Save files: go straight to this save's versions.
               self.list = loadLocalBackups(row.key)
               self.listKind = "local"
               goto_("restoreList")
-            end }
+            end
+          end, "main")
+          -- Offered only when there is something to do, so a tidy install
+          -- never shows a button that would do nothing.
+          local plan = Store.tidyPlan()
+          if #plan > 0 then
+            table.insert(items, #items, { ("Tidy %d copies"):format(#plan),
+              function()
+                self.pendingTidy = plan
+                goto_("confirmTidy")
+              end })
           end
-          if #items == 0 then
-            items[#items + 1] = { "No saves yet", function() goto_("main") end }
-          end
-          items[#items + 1] = { "Back", function() goto_("main") end }
           return items
+        end
+
+        if self.view == "confirmTidy" then
+          return {
+            { "Yes, tidy them", function()
+              local removed, failed = Store.tidyApply(self.pendingTidy)
+              self.pendingTidy = nil
+              self.slotRows = Store.slotOverview(self.conflicts)
+              self.page = 1
+              if failed > 0 then
+                say(("Removed %d, %d would not go."):format(removed, failed))
+              else
+                say(("Removed %d copies."):format(removed))
+              end
+              goto_("slots")
+            end },
+            { "No", function()
+              self.pendingTidy = nil
+              goto_("slots")
+            end },
+          }
         end
 
         if self.view == "restorePick" then
           local items = {
             { "From this device", function()
-              self.restoreKey = nil
-              self.list = loadLocalBackups()
+              self.list = loadLocalBackups(self.restoreKey)
               self.listKind = "local"
               goto_("restoreList")
             end },
           }
           if Sync.configured() then
             items[#items + 1] = { "From the cloud", function()
-              local first = next(Store.readAllLocal())
+              local first = self.restoreKey or next(Store.readAllLocal())
               if not first then
                 say("No save on this device to match up.")
                 return
@@ -920,6 +968,12 @@ return function(mod, cfgOpts)
         elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
           hdr("Restore this")
           hdr("snapshot?")
+        elseif self.view == "confirmTidy" and self.pendingTidy then
+          hdr(("Remove %d duplicate"):format(#self.pendingTidy))
+          hdr("save slots?")
+          hdr("Each is an exact copy")
+          hdr("of one being kept, and")
+          hdr("is backed up first.")
         elseif self.view == "disconnect" then
           hdr("Stop syncing here?")
           hdr("Your saves stay.")

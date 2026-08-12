@@ -33,9 +33,10 @@ local Snapshot = {}
 
 Snapshot.FORMAT = 1
 
--- Per playthrough. Ten covers "something went wrong a while ago" without
--- turning the folder into an archive; each is a few KB.
-local KEEP = 10
+-- Retention is Util.thin, not a flat count -- see there for why. This is
+-- kept only for the cloud-side cap in sync.lua.
+
+
 
 local DIR = "savesync/snapshots"
 
@@ -141,9 +142,13 @@ function Snapshot.prune(key)
   if not f then return end
   local dir = dirFor(key)
   if not f.getInfo(dir) then return end
+  -- Same thinning as the local backups: an auto-snapshot every five minutes
+  -- would otherwise fill the whole list with one afternoon.
   local items = f.getDirectoryItems(dir)
-  table.sort(items)
-  for i = 1, #items - KEEP do f.remove(dir .. "/" .. items[i]) end
+  local keep = Util.thin(items)
+  for _, item in ipairs(items) do
+    if not keep[item] then f.remove(dir .. "/" .. item) end
+  end
 end
 
 -- ------------------------------------------------------------------ read

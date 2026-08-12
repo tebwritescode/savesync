@@ -247,4 +247,63 @@ function Util.wrap(text, width)
   return lines
 end
 
+-- ------------------------------------------------------------- thinning
+
+-- GFS-style retention -- the scheme restic and borg use -- sized for a play
+-- session rather than a server.
+--
+-- WHY NOT A FLAT COUNT.  "Keep the newest ten" sounds tidy and produces ten
+-- restore points from the last eight minutes, all nearly identical, while
+-- yesterday's save -- the one somebody actually wants back -- has already
+-- been evicted. Ten minutes of play was generating forty rows across a few
+-- playthroughs. A cap is not a policy.
+--
+-- So: the last few writes whatever their age (you usually want the most
+-- recent), then ONE per hour going back, then ONE per day. Coverage widens
+-- as it recedes, which is how regret actually works: nobody needs 14:32
+-- versus 14:34, everybody needs "sometime yesterday".
+Util.KEEP_LAST = 4      -- the most recent, whatever their timestamps
+Util.KEEP_HOURLY = 6    -- then one per hour, for six hours
+Util.KEEP_DAILY = 7     -- then one per day, for a week
+
+--- Decide which stamped names to keep.  `names` are filenames beginning with
+--- a "YYYYmmdd-HHMMSS" stamp, which sorts chronologically as plain text -- so
+--- the buckets are string prefixes and no date arithmetic is needed anywhere.
+--- Returns a set: keep[name] == true.
+function Util.thin(names, opts)
+  opts = opts or {}
+  local last = opts.last or Util.KEEP_LAST
+  local hourly = opts.hourly or Util.KEEP_HOURLY
+  local daily = opts.daily or Util.KEEP_DAILY
+
+  local sorted = {}
+  for _, n in ipairs(names) do sorted[#sorted + 1] = n end
+  table.sort(sorted, function(a, b) return a > b end)   -- newest first
+
+  local keep, hours, days = {}, {}, {}
+  local hourCount, dayCount = 0, 0
+  for i, name in ipairs(sorted) do
+    local stamp = name:match("^(%d+%-%d+)")
+    if i <= last then
+      keep[name] = true
+    elseif stamp then
+      -- "20260812-00" is the hour bucket, "20260812" the day bucket
+      local hour, day = stamp:sub(1, 11), stamp:sub(1, 8)
+      if not hours[hour] and hourCount < hourly then
+        hours[hour], hourCount = true, hourCount + 1
+        keep[name] = true
+      elseif not days[day] and dayCount < daily then
+        days[day], dayCount = true, dayCount + 1
+        keep[name] = true
+      end
+    else
+      -- An unstamped name comes from an older build; keeping it costs one
+      -- slot, and dropping it would silently lose a restore point somebody
+      -- already has.
+      keep[name] = true
+    end
+  end
+  return keep
+end
+
 return Util

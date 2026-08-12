@@ -34,10 +34,10 @@ local Store = {}
 local CONFIG_PATH = "savesync/config.lua"
 local BACKUP_DIR = "savesync/backups"
 
--- Ten is a lot of history for a file that changes when the player walks into
--- a Poké Center, and it is small: ten copies of a Gen 1 save is under half a
--- megabyte.  The same number bounds the cloud-side history.
-local KEEP_BACKUPS = 10
+-- Local retention is Util.thin, not a flat count -- see there for why.
+
+
+
 
 -- ---------------------------------------------------------------- config
 
@@ -112,6 +112,26 @@ function Store.forget()
   Store.saveConfig(cfg)
 end
 
+--- Which slot a key was last written to, remembered across launches.
+--- findSlotForKey answers this by reading every slot, but only while the
+--- save on disk still computes to that key; the map is what makes apply()
+--- idempotent even when it does not.
+function Store.slotFor(key)
+  local c = Store.config()
+  c.slotMap = c.slotMap or {}
+  return c.slotMap[key]
+end
+
+function Store.rememberSlot(key, slotId)
+  if not key or not slotId then return end
+  local c = Store.config()
+  c.slotMap = c.slotMap or {}
+  if c.slotMap[key] ~= slotId then
+    c.slotMap[key] = slotId
+    Store.saveConfig(c)
+  end
+end
+
 function Store.keyState(key)
   local cfg = Store.config()
   cfg.keys[key] = cfg.keys[key] or {}
@@ -148,6 +168,25 @@ end
 --- The screen shows this so a player can see at a glance which of their files
 --- are safe and which are still waiting, rather than inferring it from a
 --- single global "last synced" line that says nothing about slot three.
+--- Slots holding a save the engine has not stamped yet.  These do not sync
+--- (see keyFor); the next in-game SAVE stamps them and they join in.
+function Store.unkeyedSlots()
+  local out = {}
+  for _, version in ipairs(Store.versions()) do
+    for _, slot in ipairs(SaveData.listSlots(version) or {}) do
+      local rec = slot.exists and Store.readSlot(version, slot.id)
+      if rec and not rec.key then
+        out[#out + 1] = {
+          version = version, slotId = slot.id, status = "local only",
+          name = rec.save and rec.save.player and rec.save.player.name or nil,
+          badges = rec.summary and rec.summary.badges or nil,
+        }
+      end
+    end
+  end
+  return out
+end
+
 function Store.slotOverview(conflicts)
   conflicts = conflicts or {}
   local out = {}
@@ -172,6 +211,7 @@ function Store.slotOverview(conflicts)
       badges = rec.summary and rec.summary.badges or nil,
     }
   end
+  for _, row in ipairs(Store.unkeyedSlots()) do out[#out + 1] = row end
   table.sort(out, function(a, b)
     if a.version ~= b.version then return a.version < b.version end
     return tostring(a.slotId) < tostring(b.slotId)
@@ -188,9 +228,17 @@ local function keyFor(version, save, slotId)
   if type(pid) == "string" and pid ~= "" then
     return version .. "-" .. pid:sub(1, 16)
   end
-  -- A pre-identity save has no id until the next in-game SAVE stamps one in;
-  -- until then the slot names it, which is stable on this device.
-  return version .. "-" .. tostring(slotId or "legacy")
+  -- NO ID, NO KEY. This used to fall back to "<version>-<slotId>", which is
+  -- device-local by construction: downloaded onto a machine where that slot
+  -- was taken, it matched nothing, so apply() made a new slot -- whose key
+  -- then computed to the NEW slot id, so the next cycle matched nothing
+  -- either and made another. One new save slot per sync, forever, until the
+  -- player had fifty pages of them.
+  --
+  -- A save the engine has not stamped yet simply does not sync. The next
+  -- in-game SAVE stamps it and it joins in, which is a wait measured in
+  -- minutes rather than a mess measured in pages.
+  return nil
 end
 
 -- Build a record from a slot path.  nil when the slot holds nothing, or
@@ -247,6 +295,12 @@ function Store.readAllLocal()
       local rec = slot.exists and Store.readSlot(version, slot.id)
       if rec then
         seen = true
+        -- A save the engine has not stamped with a playthrough id has no key,
+        -- and nothing that has no key can sync: there is no name for it that
+        -- means the same thing on a second device. It shows in Slots as
+        -- "local only" rather than vanishing. See keyFor.
+      end
+      if rec and rec.key then
         -- Two slots claiming one playthrough id means a save was copied
         -- between slots.  Keep the first by slot order and leave the other
         -- alone rather than have them fight over the same cloud object.
@@ -258,7 +312,7 @@ function Store.readAllLocal()
     -- legacy save syncing instead of silently dropping it.
     if not seen then
       local rec = Store.readLocal(version)
-      if rec and not out[rec.key] then out[rec.key] = rec end
+      if rec and rec.key and not out[rec.key] then out[rec.key] = rec end
     end
   end
   return out
@@ -311,11 +365,14 @@ function Store.backup(key, bytes, tag)
     tag or "local")
   if not f.write(dir .. "/" .. name, bytes) then return nil end
 
-  -- Prune oldest first.  Names begin with a sortable UTC stamp, so plain
-  -- lexicographic order is chronological order.
+  -- Thinned, not capped. See Util.thin: the newest few, then one per hour,
+  -- then one per day. A flat "keep ten" filled the list with ten copies of
+  -- the last eight minutes and threw away yesterday.
   local items = f.getDirectoryItems(dir)
-  table.sort(items)
-  for i = 1, #items - KEEP_BACKUPS do f.remove(dir .. "/" .. items[i]) end
+  local keep = Util.thin(items)
+  for _, item in ipairs(items) do
+    if not keep[item] then f.remove(dir .. "/" .. item) end
+  end
   return name
 end
 
@@ -386,7 +443,20 @@ function Store.apply(version, key, bytes, tag)
   local save, err = Store.validate(bytes, version)
   if not save then return false, err end
 
-  local slotId = key and Store.findSlotForKey(version, key) or nil
+  -- The remembered slot wins: it is the only source that survives the save's
+  -- own key changing, which is exactly the case that ran away.
+  local slotId = key and Store.slotFor(key) or nil
+  if slotId and not SaveData.saveFilename then slotId = nil end
+  if slotId then
+    local exists = false
+    for _, slot in ipairs(SaveData.listSlots(version) or {}) do
+      if slot.id == slotId then exists = true end
+    end
+    if not exists then slotId = nil end
+  end
+  if not slotId then
+    slotId = key and Store.findSlotForKey(version, key) or nil
+  end
   local isNewSlot = false
   if not slotId then
     -- Fall back to the active slot only when it is EMPTY or already holds
@@ -411,6 +481,9 @@ function Store.apply(version, key, bytes, tag)
 
   local ok, werr = SaveData.writeSlot(version, slotId, save)
   if not ok then return false, tostring(werr or "could not write the save") end
+  -- Remember it BEFORE anything else can fail, so a crash here cannot leave
+  -- the next cycle thinking this key has no home and making another slot.
+  Store.rememberSlot(key, slotId)
 
   -- Point CONTINUE at the new file only when nothing was selected before --
   -- a fresh install adopting its first save. Otherwise the player's current
@@ -427,6 +500,98 @@ function Store.restoreBackup(version, key, name)
   local bytes = Store.readBackup(key, name)
   if not bytes then return false, "that backup is gone" end
   return Store.apply(version, key, bytes, "undo")
+end
+
+-- ------------------------------------------------------------------ tidy
+
+-- Cleaning up after the runaway.
+--
+-- Builds up to and including v1.9.x keyed an unstamped save by its SLOT,
+-- which is device-local, so every sync cycle failed to match and made
+-- another slot. Players ended up with dozens of them. The keyFor and
+-- slotMap fixes stop it happening; they cannot remove what already exists.
+--
+-- WHAT THIS WILL AND WILL NOT TOUCH. Every runaway slot is a byte-for-byte
+-- copy of the same downloaded save, so duplicates are identifiable exactly,
+-- by content hash, with no guessing about dates or names. One slot per group
+-- survives -- the active one if it is in the group, otherwise the first --
+-- and a slot whose contents are unique is never a duplicate of anything and
+-- is never touched. Deliberately keeping the same file in two slots costs
+-- one of them, which is why nothing runs without the player saying so.
+
+--- What tidying WOULD remove.  Returns rows plus the survivor each is a copy
+--- of, so the screen can say what is about to happen before it happens.
+function Store.tidyPlan()
+  local plan = {}
+  for _, version in ipairs(Store.versions()) do
+    local active = SaveData.activeSlot(version)
+    local groups, order = {}, {}
+    for _, slot in ipairs(SaveData.listSlots(version) or {}) do
+      local rec = slot.exists and Store.readSlot(version, slot.id)
+      if rec and rec.hash then
+        if not groups[rec.hash] then
+          groups[rec.hash] = {}
+          order[#order + 1] = rec.hash
+        end
+        local g = groups[rec.hash]
+        g[#g + 1] = { id = slot.id, rec = rec }
+      end
+    end
+    for _, hash in ipairs(order) do
+      local g = groups[hash]
+      if #g > 1 then
+        -- The active slot survives when it is one of the copies; otherwise
+        -- the first, which is the oldest by registry order.
+        local keep = 1
+        for i, entry in ipairs(g) do
+          if entry.id == active then keep = i break end
+        end
+        for i, entry in ipairs(g) do
+          if i ~= keep then
+            plan[#plan + 1] = {
+              version = version,
+              slotId = entry.id,
+              keepSlot = g[keep].id,
+              name = entry.rec.save and entry.rec.save.player
+                and entry.rec.save.player.name or nil,
+              badges = entry.rec.summary and entry.rec.summary.badges or nil,
+              bytes = entry.rec.bytes,
+              key = entry.rec.key,
+            }
+          end
+        end
+      end
+    end
+  end
+  return plan
+end
+
+--- Carry out a plan.  Every removed slot is backed up first, so a mistake
+--- here is undoable from Restore Previous Save like any other write.
+--- Returns removed, failed.
+function Store.tidyApply(plan)
+  local removed, failed = 0, 0
+  for _, row in ipairs(plan or {}) do
+    local key = row.key or (row.version .. "-tidied")
+    pcall(Store.backup, key, row.bytes, "tidied")
+    local ok = SaveData.deleteSlot(row.version, row.slotId)
+    if ok then
+      removed = removed + 1
+      -- Drop any mapping pointing at a slot that no longer exists, so the
+      -- next apply resolves afresh rather than at a hole.
+      local c = Store.config()
+      if type(c.slotMap) == "table" then
+        local dirty = false
+        for k, v in pairs(c.slotMap) do
+          if v == row.slotId then c.slotMap[k] = nil dirty = true end
+        end
+        if dirty then Store.saveConfig(c) end
+      end
+    else
+      failed = failed + 1
+    end
+  end
+  return removed, failed
 end
 
 return Store

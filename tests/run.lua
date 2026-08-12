@@ -210,6 +210,55 @@ local mainSrc = assert(io.open(ROOT .. "main.lua", "rb")):read("*a")
 check("main.lua guards its environment read",
   mainSrc:find('type%(os%.getenv%) ~= "function"') ~= nil)
 
+
+-- ---------------------------------------------------------- thinning
+
+-- The complaint that produced this: "a list of 40 saves for 10 minutes play
+-- is like insane". A flat cap cannot fix that -- it just picks WHICH forty.
+do
+  -- Twelve writes inside one hour, then a few spread over previous days.
+  local names = {}
+  for i = 1, 12 do
+    names[#names + 1] = ("20260812-14%02d00-abcd1234.sav"):format(i)
+  end
+  names[#names + 1] = "20260812-130000-aaaa1111.sav"   -- an hour earlier
+  names[#names + 1] = "20260812-120000-bbbb2222.sav"   -- two hours earlier
+  names[#names + 1] = "20260811-140000-cccc3333.sav"   -- yesterday
+  names[#names + 1] = "20260810-140000-dddd4444.sav"   -- the day before
+
+  local keep = Util.thin(names)
+  local kept = 0
+  for _ in pairs(keep) do kept = kept + 1 end
+  check("thinning collapses a burst", kept < #names,
+    ("kept %d of %d"):format(kept, #names))
+
+  -- The most recent must always survive -- it is what people want back.
+  check("the newest is always kept", keep["20260812-141200-abcd1234.sav"] == true)
+
+  -- And so must the older days, which a flat "newest ten" would have evicted
+  -- in favour of ten copies of the same afternoon.
+  check("yesterday survives a busy today", keep["20260811-140000-cccc3333.sav"] == true)
+  check("the day before survives too", keep["20260810-140000-dddd4444.sav"] == true)
+
+  -- One per hour, not twelve.
+  local sameHour = 0
+  for name in pairs(keep) do
+    if name:sub(1, 11) == "20260812-14" then sameHour = sameHour + 1 end
+  end
+  -- At most KEEP_LAST recent ones, plus the hour's own slot, plus the day's
+  -- slot (which today's newest remaining candidate fills). Six of twelve,
+  -- not twelve.
+  check("one busy hour does not fill the list", sameHour <= Util.KEEP_LAST + 2,
+    "kept " .. sameHour .. " from a single hour")
+
+  -- Names from an older build carry no stamp; dropping them would silently
+  -- lose a restore point somebody already has.
+  local legacy = Util.thin({ "oldstyle.sav", "20260812-141200-abcd1234.sav" })
+  check("an unstamped legacy name is kept", legacy["oldstyle.sav"] == true)
+
+  eq("empty input is fine", next(Util.thin({})), nil)
+end
+
 -- --------------------------------------------------- the decision table
 
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")

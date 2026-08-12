@@ -123,9 +123,28 @@ local function newDevice(name)
       return out
     end,
     createSlot = function()
-      local id = "slot" .. (#slots.list + 1)
+      -- Mirrors the engine: highest existing number plus one, NOT the count.
+      -- After a slot is deleted those differ, and reusing a live id would
+      -- silently overwrite somebody's save.
+      local maxN = 0
+      for _, id in ipairs(slots.list) do
+        local n = tonumber(tostring(id):match("^slot(%d+)$"))
+        if n and n > maxN then maxN = n end
+      end
+      local id = "slot" .. (maxN + 1)
       slots.list[#slots.list + 1] = id
       return id
+    end,
+    deleteSlot = function(version, slotId)
+      local idx
+      for i, id in ipairs(slots.list) do
+        if id == slotId then idx = i break end
+      end
+      if not idx then return false, "slot not registered" end
+      dev.disk["saves/" .. version .. "/" .. slotId .. ".lua"] = nil
+      table.remove(slots.list, idx)
+      if slots.active == slotId then slots.active = slots.list[1] end
+      return true
     end,
     setActiveSlot = function(_, id) slots.active = id end,
     writeSlot = function(version, slotId, tbl)
@@ -1036,6 +1055,130 @@ for _ = 1, 4000 do
 end
 check("an old-shape history entry still restores", restored == true)
 eq("and the old save is what landed", localSave(A).player.name, "OLD")
+
+-- 15. THE RUNAWAY SLOT BUG.
+--
+-- Reported from a real device: "there are now 50 pages of individual save
+-- slots on my game". A save with no playthroughId was keyed by its SLOT --
+-- device-local by construction. Downloaded onto a machine where that slot
+-- was taken, it matched nothing, so apply() made a new slot; the new slot's
+-- key then computed to the NEW slot id, so the next cycle matched nothing
+-- either. One new save slot per sync cycle, forever.
+
+local G = newDevice("Device G")
+
+-- A save the engine has never stamped: no meta.playthroughId.
+play(G, { version = "red", player = { name = "NOID" }, badges = 1, meta = {} })
+activate(G)
+local unidentified = G.Store.readAllLocal()
+local count = 0
+for _ in pairs(unidentified) do count = count + 1 end
+eq("an unstamped save does not sync at all", count, 0)
+
+-- ...and it is still visible to the player, rather than silently ignored.
+local before = #G.saveData.listSlots("red")
+check("the slot itself still exists", before > 0)
+
+-- Now the loop itself: apply the same key repeatedly, as a stuck sync would.
+local H = newDevice("Device H")
+play(H, { version = "red", player = { name = "RED" }, badges = 1,
+          meta = { playthroughId = "PLAYRUN1", savedAt = 1 } })
+activate(H)
+local startSlots = #H.saveData.listSlots("red")
+
+-- A DIFFERENT playthrough arrives; it legitimately gets one new slot.
+local incoming = serialize({ version = "red", player = { name = "OTHER" },
+  badges = 2, meta = { playthroughId = "PLAYRUN2", savedAt = 2 } })
+for i = 1, 12 do
+  local ok = H.Store.apply("red", "red-PLAYRUN2", incoming, "cloud")
+  check("apply #" .. i .. " succeeded", ok == true)
+end
+local endSlots = #H.saveData.listSlots("red")
+eq("twelve applies of one save make exactly one slot", endSlots, startSlots + 1)
+
+-- And the remembered mapping is what makes it idempotent.
+eq("the slot is remembered against the key",
+  H.Store.slotFor("red-PLAYRUN2") ~= nil, true)
+
+-- 16. THE LEGACY CLOUD OBJECT.
+--
+-- Every cloud written by v1.9.x and earlier contains objects keyed the old
+-- device-local way ("red-slot1"). Fixing keyFor does nothing for those --
+-- they are already up there. Applying one writes a save whose OWN key is
+-- "red-<playthroughId>", which findSlotForKey will never match against
+-- "red-slot1", so the runaway continues on exactly the installs that have
+-- the problem. The remembered slot map is what stops it.
+
+local L = newDevice("Device L")
+play(L, { version = "red", player = { name = "MINE" }, badges = 1,
+          meta = { playthroughId = "MINE0001", savedAt = 1 } })
+activate(L)
+local baseline = #L.saveData.listSlots("red")
+
+-- A legacy-keyed object holding a properly stamped save: key and content
+-- disagree about identity, which is the whole problem.
+local legacy = serialize({ version = "red", player = { name = "OLD" },
+  badges = 3, meta = { playthroughId = "OTHER002", savedAt = 9 } })
+for i = 1, 15 do
+  check("legacy apply #" .. i, L.Store.apply("red", "red-slot1", legacy, "cloud") == true)
+end
+eq("fifteen applies of a legacy-keyed object make exactly one slot",
+  #L.saveData.listSlots("red"), baseline + 1)
+
+-- 17. TIDYING UP AFTER THE RUNAWAY.
+--
+-- The fixes above stop new stray slots; they cannot remove the fifty pages
+-- a player already has. Tidy removes byte-identical copies only.
+
+local T = newDevice("Device T")
+play(T, { version = "red", player = { name = "KEEP" }, badges = 2,
+          meta = { playthroughId = "KEEPME01", savedAt = 5 } })
+activate(T)
+
+-- Simulate the runaway: the same bytes landing in slot after slot.
+local function dupeSave()
+  return { version = "red", player = { name = "DUPE" }, badges = 4,
+           meta = { playthroughId = "DUPE0001", savedAt = 7 } }
+end
+for _ = 1, 6 do
+  local id = T.saveData.createSlot("red")
+  T.saveData.writeSlot("red", id, dupeSave())
+end
+-- ...and one slot that is genuinely its own save.
+local uniqueId = T.saveData.createSlot("red")
+T.saveData.writeSlot("red", uniqueId, { version = "red",
+  player = { name = "UNIQUE" }, badges = 8,
+  meta = { playthroughId = "UNIQ0001", savedAt = 8 } })
+
+local before = #T.saveData.listSlots("red")
+local plan = T.Store.tidyPlan()
+eq("five of the six copies are planned for removal", #plan, 5)
+
+for _, row in ipairs(plan) do
+  check("never plans to remove the unique save", row.slotId ~= uniqueId)
+  check("every removal names the copy it keeps", row.keepSlot ~= nil)
+  check("never removes the slot it is keeping", row.slotId ~= row.keepSlot)
+end
+
+local removed, failed = T.Store.tidyApply(plan)
+eq("all five removed", removed, 5)
+eq("none failed", failed, 0)
+eq("slot count drops by exactly five", #T.saveData.listSlots("red"), before - 5)
+
+-- The originals survive, and the removals are recoverable.
+local names = {}
+for _, slot in ipairs(T.saveData.listSlots("red")) do
+  local rec = slot.exists and T.Store.readSlot("red", slot.id)
+  if rec then names[rec.save.player.name] = true end
+end
+check("the player's own save is untouched", names["KEEP"] == true)
+check("one copy of the duplicate survives", names["DUPE"] == true)
+check("the unique save is untouched", names["UNIQUE"] == true)
+check("a tidied save is recoverable from backups",
+  #T.Store.listBackups("red-DUPE0001") > 0)
+
+-- Idempotent: nothing left to do on a tidy install.
+eq("tidying twice finds nothing the second time", #T.Store.tidyPlan(), 0)
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

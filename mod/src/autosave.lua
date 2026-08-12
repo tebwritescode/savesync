@@ -201,7 +201,7 @@ function Autosave.update(game)
       -- same backup folder Restore Previous Save reads, tagged `auto`.
       local version = game.save and game.save.version
       local ok, rec = pcall(Store.readLocal, version)
-      if ok and rec then pcall(Store.backup, rec.key, rec.bytes, "auto") end
+      if ok and rec and rec.key then pcall(Store.backup, rec.key, rec.bytes, "auto") end
 
       -- Flagged so the save.writing listener can tell OUR write from one the
       -- player chose. A prompt after every autosave would be the opposite of

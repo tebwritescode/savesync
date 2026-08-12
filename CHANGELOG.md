@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-08-12
+
+### Fixed
+- **Auto save no longer creates new save slots.** A save the engine had not yet
+  stamped with a playthrough id was keyed by its *slot* -- a name that means a
+  different thing on every device. Downloaded onto a machine where that slot
+  was taken, it matched nothing, so a new slot was created; the new slot's key
+  then computed to the *new* slot id, so the next cycle matched nothing either.
+  One new save slot per sync, without bound -- fifty pages of them on a real
+  install. Three changes close it:
+  - A save with no playthrough id now has **no sync key** and simply does not
+    sync. The next in-game SAVE stamps it and it joins in, which is a wait of
+    minutes rather than a mess of pages. It shows in Slots as `local only`.
+  - The slot a key was written to is **remembered**, so a cycle resolves to the
+    same slot even when the save's own key computes to something else. This is
+    what stops clouds written by earlier versions -- which are full of the old
+    slot-shaped keys -- from running away on the very installs that have the
+    problem.
+  - A key is now bound to at most one slot, ever.
+
+### Added
+- **Tidy duplicate slots**, in `Save files`. Every stray slot the old scheme
+  created is a byte-for-byte copy of the same save, so copies are identified
+  exactly by content hash rather than guessed at by name or date. One slot per
+  group survives -- the active one if it is among them -- a slot whose contents
+  are unique is never touched, and every removal is backed up first, so it is
+  undoable from Restore Previous Save. The row appears only when there is
+  something to remove.
+- The slot list is **paged** like every other list in the mod.
+
 ## [1.9.1] - 2026-08-12
 
 ### Fixed
