@@ -26,6 +26,7 @@
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Util = SAVESYNC_INCLUDE("src/util.lua")
+local Http = SAVESYNC_INCLUDE("src/http.lua")
 
 -- How long CONTINUE will wait for an in-flight boot check before asking the
 -- player instead. Long enough for a healthy connection to answer, short
@@ -41,6 +42,26 @@ local Gate = {}
 function Gate.needed()
   if not Sync.configured() then return false end
   if Store.config().auto == false then return false end
+
+  -- NEVER HOLD THE PLAYER ON A CHECK THAT CANNOT FINISH.
+  --
+  -- Two cases, both of which used to stop CONTINUE every single launch and
+  -- say "could not check your cloud saves" on a device with a perfectly good
+  -- internet connection:
+  --
+  -- 1. THE PROVIDER IS UNREACHABLE FROM THIS BUILD AT ALL. GitHub and Dropbox
+  --    need TLS, and a build with no TLS transport will never reach them --
+  --    not now, not on the next launch. Warning about a stale save implies
+  --    waiting might help. It will not, so the warning is pure noise; the
+  --    SaveSync screen is where that belongs, said once.
+  -- 2. REQUESTS RUN ON THE MAIN THREAD. Where there are no worker threads the
+  --    transport blocks, and the boot check would freeze the game on this
+  --    very screen while the player waits on it. A gate whose progress
+  --    depends on a blocking call is a lock-up with a menu drawn over it.
+  local provider = Sync.provider()
+  if provider and provider.needsTls and not Http.tlsCapable() then return false end
+  if Http.isInline() then return false end
+
   return Sync.boot == "checking" or Sync.boot == "offline"
     or Sync.boot == "error"
 end

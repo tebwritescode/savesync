@@ -156,6 +156,11 @@ local function trySocket(job)
     headers["Content-Length"] = tostring(#job.body)
   end
 
+  -- A TIMEOUT IS NOT OPTIONAL. luasocket blocks FOREVER by default, and this
+  -- same code runs on the main thread where there are no worker threads --
+  -- so an unreachable host does not fail, it freezes the game.
+  http.TIMEOUT = 15
+
   local sink = {}
   local ok, code = pcall(http.request, {
     url = job.url,
@@ -472,6 +477,9 @@ local function runInline(id, req, headerMap)
     if req.body and #req.body > 0 then
       headers["Content-Length"] = tostring(#req.body)
     end
+    -- Same reasoning as the worker's, and more urgent here: this IS the
+    -- main thread. Without it, one unreachable host locks the game.
+    inlineSocket.http.TIMEOUT = 15
     local ok, code = pcall(inlineSocket.http.request, {
       url = req.url,
       method = (req.method or "GET"):upper(),

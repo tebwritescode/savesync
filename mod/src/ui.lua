@@ -984,6 +984,17 @@ return function(mod, cfgOpts)
           return { "Not set up yet.", "Keep your saves on all", "your devices." }
         end
         local lines = { Sync.describe() }
+        -- "Offline - will retry" is a promise, and on a build that cannot
+        -- reach this provider AT ALL it is one that will never be kept.
+        -- GitHub and Dropbox need TLS; where there is none, retrying forever
+        -- is not what is happening and should not be what it says.
+        local provider = Sync.provider()
+        if provider and provider.needsTls and not Http.tlsCapable() then
+          lines[#lines + 1] = "This app has no secure connection, so "
+            .. provider.label .. " is out of reach here. A self-hosted "
+            .. "server still works."
+          return lines
+        end
         if Sync.state == "working" then
           lines[#lines + 1] = Sync.status
         elseif Sync.state == "conflict" then

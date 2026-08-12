@@ -3,6 +3,24 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.2] - 2026-08-12
+
+### Fixed
+- **CONTINUE stops warning about a check that can never succeed.** GitHub and
+  Dropbox need TLS, and a build with no TLS transport will not reach them on
+  this launch or any other -- so "could not check your cloud saves" appeared
+  every single time, on a device with a perfectly good internet connection,
+  implying that waiting might help. It will not, so the gate stays out of the
+  way and the SaveSync screen says the true thing instead: this app has no
+  secure connection, and a self-hosted server still works.
+- **The game could freeze on that screen.** Where a build has no worker
+  threads, requests run on the main thread -- and the gate calls the sync pump
+  every frame while the player waits on it, so an unreachable host stopped the
+  whole game rather than failing. Two fixes: the gate never appears when
+  requests run inline, because a gate whose progress depends on a blocking
+  call is a lock-up with a menu drawn over it; and the inline transport now
+  has a **15 second timeout**, where luasocket's default is to block forever.
+
 ## [1.13.1] - 2026-08-12
 
 ### Fixed
