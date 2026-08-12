@@ -55,6 +55,23 @@ local cmdCh = love.thread.getChannel("savesync_http_cmd")
 local resCh = love.thread.getChannel("savesync_http_result")
 local quitCh = love.thread.getChannel("savesync_http_quit")
 
+-- LOVE's own HTTPS module, which the iOS and Android ports ship and the
+-- desktop 11.x builds generally do not.
+--
+-- WHY THIS IS HERE. The transport below is curl through HostShell, plus a
+-- native GET bridge on Android. iOS has NEITHER: there is no curl to spawn
+-- and no bridge exported, so every request failed and no provider worked at
+-- all -- sign-in, pairing and the self-hosted server alike. lua-https is the
+-- transport that platform actually has.
+--
+-- It speaks TLS only, so a plain-http self-hosted server still needs curl.
+-- Order therefore matters: https first for https:// URLs, curl after.
+local https do
+  local ok, mod = pcall(require, "https")
+  https = ok and type(mod) == "table" and type(mod.request) == "function"
+    and mod or nil
+end
+
 local function loadModule(path)
   local ok, chunk = pcall(love.filesystem.load, path)
   if not ok or type(chunk) ~= "function" then return nil end
@@ -113,7 +130,43 @@ local function cfgValue(s)
   return '"' .. s .. '"'
 end
 
+-- Send through lua-https.  Returns true when it handled the job.
+local function tryHttps(job)
+  if not https then return false end
+  -- TLS only; a plain-http URL is left to curl rather than failed here.
+  if type(job.url) ~= "string" or job.url:sub(1, 8) ~= "https://" then
+    return false
+  end
+  -- Headers cross the channel as an array of "Key: value" strings, the shape
+  -- curl's config file wants; lua-https wants a map.
+  local headers = {}
+  for _, line in ipairs(job.headers or {}) do
+    local k, v = tostring(line):match("^([^:]+):%s*(.*)$")
+    if k then headers[k] = v end
+  end
+  if job.userAgent then headers["User-Agent"] = headers["User-Agent"] or job.userAgent end
+  if job.accept then headers["Accept"] = headers["Accept"] or job.accept end
+
+  local ok, code, body = pcall(https.request, job.url, {
+    method = job.method or "GET",
+    headers = headers,
+    data = job.body,
+  })
+  if not ok then
+    post({ id = job.id, ok = false, err = "connection failed" })
+    return true
+  end
+  -- A nil code is lua-https saying the request never left the device.
+  if not code then
+    post({ id = job.id, ok = false, err = "could not reach that address" })
+    return true
+  end
+  post({ id = job.id, ok = true, code = code, body = body or "" })
+  return true
+end
+
 local function doRequest(job)
+  if tryHttps(job) then return end
   if not HostShell then
     post({ id = job.id, ok = false, err = "no transport" })
     return
@@ -147,7 +200,7 @@ local function doRequest(job)
       return
     end
     post({ id = job.id, ok = false,
-      err = "this device has no curl, so SaveSync cannot upload here" })
+      err = "this device has no way to reach the internet for SaveSync" })
     return
   end
 
@@ -248,7 +301,8 @@ end
 local function ensureWorkers()
   if ready == false then return false end
   if not (love and love.thread and love.thread.newThread) then
-    ready, unavailableReason = false, "background threads unavailable"
+    ready, unavailableReason = false,
+      "this app cannot reach the internet for SaveSync"
     return false
   end
   if not cmdCh then
@@ -308,6 +362,44 @@ local function drain()
   end
 end
 
+-- THE NO-THREADS FALLBACK.
+--
+-- Phosphor's iOS build has no love.thread, so ensureWorkers() failed and
+-- every request errored with "background threads unavailable" before any
+-- provider logic ran -- which is why NO provider worked there, sign-in,
+-- pairing and self-hosted server alike.
+--
+-- lua-https is synchronous, which the pool exists to avoid; but a blocked
+-- frame during a sign-in is a hitch, and no transport at all is a missing
+-- feature. Requests here are a few kilobytes and happen on setup or a few
+-- times a minute, so this is used ONLY when there are no workers to use.
+local inlineHttps do
+  local ok, mod = pcall(require, "https")
+  inlineHttps = ok and type(mod) == "table" and type(mod.request) == "function"
+    and mod or nil
+end
+
+local function canInline(url)
+  -- lua-https speaks TLS only, so a plain-http self-hosted server cannot come
+  -- through here and says so rather than failing obscurely.
+  return inlineHttps ~= nil and type(url) == "string"
+    and url:sub(1, 8) == "https://"
+end
+
+local function runInline(id, req, headerMap)
+  local ok, code, body = pcall(inlineHttps.request, req.url, {
+    method = (req.method or "GET"):upper(),
+    headers = headerMap,
+    data = req.body,
+  })
+  if not ok or not code then
+    jobs[id].status = "error"
+    jobs[id].err = "could not reach that address"
+    return
+  end
+  jobs[id].status, jobs[id].code, jobs[id].body = "ok", code, body or ""
+end
+
 --- Start a request.  `headers` is a map; `body` is a raw string.  Returns a
 --- job id that is valid until release().
 function Http.request(req)
@@ -316,14 +408,23 @@ function Http.request(req)
   jobs[id] = { status = "pending" }
 
   local headers, needsHeaders = {}, false
+  local headerMap = {}
   for k, v in pairs(req.headers or {}) do
     headers[#headers + 1] = k .. ": " .. v
+    headerMap[k] = v
     needsHeaders = true
   end
   table.sort(headers)
+  headerMap["User-Agent"] = headerMap["User-Agent"]
+    or req.userAgent or "gen1recomp-savesync"
+  if req.accept then headerMap["Accept"] = headerMap["Accept"] or req.accept end
 
   if not ensureWorkers() then
-    jobs[id].status, jobs[id].err = "error", unavailableReason
+    if canInline(req.url) then
+      runInline(id, req, headerMap)
+    else
+      jobs[id].status, jobs[id].err = "error", unavailableReason
+    end
     return id
   end
   cmdCh:push({
@@ -350,13 +451,22 @@ function Http.release(id)
   jobs[id] = nil
 end
 
+--- Can this device reach the network at all, by either route?
 function Http.available()
-  return ensureWorkers()
+  if ensureWorkers() then return true end
+  return inlineHttps ~= nil
 end
 
 function Http.unavailableReason()
-  ensureWorkers()
+  if ensureWorkers() then return nil end
+  if inlineHttps then return nil end
   return unavailableReason
+end
+
+--- True when requests run on the main thread, so the UI can warn that the
+--- game will pause during a transfer rather than look frozen.
+function Http.isInline()
+  return not ensureWorkers() and inlineHttps ~= nil
 end
 
 --- Stop the pool.  Called from the mod's quit path so LÖVE is not left

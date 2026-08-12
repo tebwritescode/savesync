@@ -214,7 +214,55 @@ end
 --- browser at all.
 function P.exportable(cfg)
   return { provider = "github", token = cfg.token, gist = cfg.gist,
-           account = cfg.account }
+           account = cfg.account, apiBase = cfg.apiBase, webBase = cfg.webBase }
+end
+
+--- Rebuild a live config from a pairing code.
+---
+--- WITHOUT THIS, PAIRING RAN THE SIGN-IN FLOW. The screen picks
+--- `provider.adopt or provider.link`, and GitHub had no adopt -- so pasting a
+--- GitHub setup code started the interactive device flow instead, handed it
+--- `payload.clientId`, which a GitHub code has never carried, and stopped on
+--- "no GitHub client id is configured". A pasted code already holds a working
+--- token; it needs no client id, no browser and no sign-in at all.
+---
+--- The token is CHECKED rather than trusted, so pairing can say plainly
+--- whether it worked instead of failing later during a sync.
+function P.adopt(state)
+  return Op.new(function(ctx)
+    local p = state.pasted
+    if type(p) ~= "table" or p.provider ~= "github" then
+      return ctx:fail("that setup code is not a GitHub one")
+    end
+    if not p.token or p.token == "" then
+      return ctx:fail("that setup code carries no GitHub sign-in")
+    end
+    if not p.gist or p.gist == "" then
+      return ctx:fail("that setup code names no storage")
+    end
+    local cfg = { provider = "github", token = p.token, gist = p.gist,
+                  account = p.account, apiBase = p.apiBase, webBase = p.webBase }
+
+    state.message = "Checking the code..."
+    local res = ctx:http({
+      url = apiBase(cfg) .. "/gists/" .. cfg.gist,
+      headers = apiHeaders(cfg.token),
+    })
+    if not res.ok then return ctx:fail(res.err or "could not reach GitHub") end
+    if res.code == 401 then
+      return ctx:fail("that setup code has expired -- make a new one")
+    end
+    if res.code == 404 then
+      return ctx:fail("the saves that code points at are gone")
+    end
+    if res.code ~= 200 then
+      return ctx:fail("GitHub said HTTP " .. tostring(res.code))
+    end
+    local d = Json.decode(res.body or "") or {}
+    cfg.account = cfg.account
+      or (type(d.owner) == "table" and d.owner.login) or "GitHub"
+    return cfg
+  end)
 end
 
 -- --------------------------------------------------------------- storage

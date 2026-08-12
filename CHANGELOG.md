@@ -3,6 +3,49 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] - 2026-08-12
+
+### Fixed
+- **SaveSync works on iOS.** Every provider failed there -- sign-in, pairing
+  and the self-hosted server alike -- with "background threads unavailable".
+  The transport is a pool of `love.thread` workers running curl, and the
+  Phosphor iOS build has **no `love.thread`**, no curl to spawn, and no
+  Android-style native bridge. The pool never started, so every request
+  errored before any provider logic ran.
+  - LÖVE's own **`https` module** is now the first transport when it is
+    present, which is precisely the platform where curl is not.
+  - Where there are no worker threads at all, requests run on the main thread
+    through that module. It blocks a frame, which the pool exists to avoid --
+    but a brief pause during a sign-in beats a feature that cannot work.
+  - Desktop is unchanged: threads and curl are still used where they exist,
+    and the inline path is never taken there.
+  - A device with no transport at all now says so in words, rather than
+    naming a thread pool the player has no way to act on.
+- **Pairing with a GitHub setup code works.** The setup screen picks
+  `provider.adopt or provider.link`, and GitHub had no `adopt` -- so pasting a
+  code started the interactive **sign-in** instead, handed it a client id that
+  a GitHub code has never carried, and stopped on "no GitHub client id is
+  configured". GitHub now adopts a pasted code directly: no client id, no
+  browser, no sign-in. The token is checked as part of pairing, so a stale
+  code fails then and there rather than during a later sync.
+- **Pairing says whether it worked**: `Paired. This device now shares those
+  saves.` or `Pairing failed:` and the reason. Previously a failure dropped
+  back to the provider list with a bare message that read as nothing having
+  happened.
+- **Text no longer runs under the right border.** Lines wrapped to 19 columns
+  starting at x=8, ending exactly on the frame, which sliced the last
+  character off every full line. The reader's `B: back` sat two pixels below
+  the box and was cut in half.
+
+### Testing
+- `tests/http.test.lua` covers the transport matrix directly -- no threads
+  with and without `https`, plain-http refusal, a 404 staying a successful
+  request, and desktop keeping its worker pool. This layer had never been
+  tested; it had always been mocked away above.
+- The fake GitHub now **enforces authentication**, answering 401 to a bad
+  token as the real one does. A fake that accepts any credential cannot catch
+  a bug in a flow whose whole job is carrying a token between devices.
+
 ## [1.11.1] - 2026-08-12
 
 ### Fixed

@@ -180,6 +180,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ------------------------------------------------------ api.github.com
+  //
+  // AUTHENTICATION IS ENFORCED, because a fake that accepts any token cannot
+  // catch an auth bug -- and pairing is exactly a flow whose whole job is to
+  // carry a token from one device to another. Real GitHub answers 401 with a
+  // JSON message here; so does this.
+  if (u.pathname !== '/login/device/code'
+      && u.pathname !== '/login/oauth/access_token') {
+    const auth = req.headers['authorization'] || '';
+    const token = auth.replace(/^(Bearer|token)\s+/i, '');
+    if (!token.startsWith('gho_faketoken')) {
+      return sendJson(res, 401, {
+        message: 'Bad credentials',
+        documentation_url: 'https://docs.github.com/rest',
+      });
+    }
+  }
+
   if (req.method === 'GET' && u.pathname === '/user') {
     return sendJson(res, 200, { login: 'octocat-test', id: 123456 });
   }

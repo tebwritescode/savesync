@@ -211,7 +211,7 @@ _G.love = {
 
 local Github = SAVESYNC_INCLUDE("src/providers/github.lua")
 
-local function drain(op, label)
+local function drain(op, label, expectError)
   local status, value
   for _ = 1, 4000 do
     status, value = op:poll()
@@ -219,7 +219,7 @@ local function drain(op, label)
   end
   if status == "pending" then
     print("  (" .. label .. " never finished)")
-  elseif status == "error" then
+  elseif status == "error" and not expectError then
     print("  (" .. label .. " error: " .. tostring(value) .. ")")
   end
   return status, value
@@ -328,6 +328,44 @@ local stateB = {}
 local statusB, cfgB = drain(Github.link(stateB, opts()), "B: link")
 eq("B: link finished ok", statusB, "ok")
 eq("B: found A's gist rather than creating a new one", cfgB and cfgB.gist, cfgA.gist)
+
+print("-- device C PAIRS with a setup code, which must not touch the sign-in flow")
+-- THE BUG THIS COVERS. The setup screen picks `provider.adopt or
+-- provider.link`, and GitHub had no `adopt` -- so pasting a GitHub setup code
+-- ran the interactive DEVICE FLOW instead, handed it `payload.clientId`,
+-- which a GitHub code has never carried, and stopped on "no GitHub client id
+-- is configured". Pairing needs no client id at all: the code already holds a
+-- working token.
+local Pairing = SAVESYNC_INCLUDE("src/pairing.lua")
+
+check("GitHub offers an adopt path at all", type(Github.adopt) == "function")
+
+local code = Pairing.encode("github", cfgA)
+check("a GitHub setup code can be produced", type(code) == "string")
+local payload = Pairing.decode(code)
+check("and decoded back", type(payload) == "table")
+
+-- Exactly what the screen does, WITHOUT a client id anywhere.
+local stateC = { pasted = payload }
+local statusC, cfgC = drain(Github.adopt(stateC), "C: adopt")
+eq("C: pairing succeeds with no client id", statusC, "ok")
+eq("C: and lands on the same gist as A", cfgC and cfgC.gist, cfgA.gist)
+
+-- It reads the same saves, which is the entire point of pairing.
+local _, readC = drain(Github.read(cfgC, { "red-GH00001.sav" }), "C: read")
+eq("C: the paired device reads A's save", readC and readC["red-GH00001.sav"], SAVE2)
+
+print("-- a code with a dead token FAILS at pairing time, not later mid-sync")
+local badState = { pasted = { provider = "github", token = "not-a-token",
+                              gist = cfgA.gist, apiBase = payload.apiBase } }
+local badStatus, badErr = drain(Github.adopt(badState), "C: bad token", true)
+eq("C: a rejected token fails the pairing", badStatus, "error")
+check("C: and says something a player can act on", type(badErr) == "string")
+
+print("-- a code for another service is refused rather than half-adopted")
+local wrongState = { pasted = { provider = "dropbox", refresh = "x" } }
+local wrongStatus = drain(Github.adopt(wrongState), "C: wrong provider", true)
+eq("C: a non-GitHub code is refused", wrongStatus, "error")
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -46,7 +46,11 @@ local BOX_BOTTOM = 132       -- last y a row may occupy inside the border
 local HEADER_TOP, HEADER_SLOTS = 22, 4
 local ROWS_TOP, ROW_COUNT = 72, 5
 local VISIBLE = ROW_COUNT    -- cursor window; a mismatch scrolls it out of sight
-local WRAP_WIDTH = 19        -- columns available to text starting at x=8
+-- 18, not 19. Text starts at x=8 and the glyphs are 8 wide, so 19 columns
+-- end at 160 -- exactly under the box's right border, which sliced the last
+-- character off every full line ("no GitHub client i" on a real phone).
+-- 18 leaves the same 8px margin on the right as the text has on the left.
+local WRAP_WIDTH = 18        -- columns available to text starting at x=8
 
 -- Restore lists are PAGED rather than scrolled. Ten backups plus ten cloud
 -- versions is a long ribbon to drag a cursor through on a d-pad, and a player
@@ -395,13 +399,19 @@ return function(mod, cfgOpts)
           return
         end
         local provider = Providers.get(payload.provider)
-        self.link = { provider = provider, pasted = payload }
+        -- `paired` marks WHICH flow this is, so the outcome can say "Paired"
+        -- rather than the sign-in wording. A code that fails used to drop the
+        -- player back on the provider list with a truncated message and no
+        -- statement of what had just happened.
+        self.link = { provider = provider, pasted = payload, paired = true }
         local linker = provider.adopt or provider.link
         self.linkOp = linker(self.link, { clientId = payload.clientId })
+        say("Checking that code...")
         goto_("device")
       end
 
       local function finishLink(cfg)
+        local paired = self.link and self.link.paired
         local c = Store.config()
         c.provider, c.cfg = cfg.provider, cfg
         c.keys = {}
@@ -410,7 +420,11 @@ return function(mod, cfgOpts)
         Sync.request(true)
         self.link, self.linkOp = nil, nil
         goto_("main")
-        say("Connected. Syncing your saves...")
+        if paired then
+          say("Paired. This device now shares those saves.")
+        else
+          say("Connected. Syncing your saves...")
+        end
       end
 
       -- ------------------------------------------------------ restore
@@ -723,8 +737,13 @@ return function(mod, cfgOpts)
             self.linkOp = nil
             finishLink(value)
           elseif st == "error" then
+            local paired = self.link and self.link.paired
             self.linkOp = nil
-            say(tostring(value))
+            self.link = nil
+            -- Name the thing that failed. Landing on the provider list with a
+            -- bare provider error read as "nothing happened".
+            say(paired and ("Pairing failed. " .. tostring(value))
+                or tostring(value))
             goto_("setup")
           end
         end
@@ -864,7 +883,9 @@ return function(mod, cfgOpts)
           if r.scroll + READER_ROWS < #r.lines then
             Font.drawCode(Theme.moreArrow, 148, 122)
           end
-          Font.draw("B: back", 8, 134)
+          -- BOX_BOTTOM, not 134: two pixels lower put this under the border
+          -- and cut the footer in half on a real screen.
+          Font.draw("B: back", 8, BOX_BOTTOM)
           return
         end
 
