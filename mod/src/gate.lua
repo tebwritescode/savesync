@@ -86,7 +86,10 @@ function Gate.installAskSave(mod)
 
       local items = {
         { "Sync now", function()
-          Sync.request(true)
+          -- Announced: the player asked for this by name, straight after
+          -- saving, and gets a SYNCED flash when it actually lands rather
+          -- than a screen that closes and says nothing.
+          Sync.request(true, false, true)
           game.stack:pop()
         end },
         { "Later", function() game.stack:pop() end },

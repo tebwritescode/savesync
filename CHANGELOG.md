@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] - 2026-08-12
+
+### Fixed
+- **The stray save slots came back, from the cloud.** 1.11.0 stopped new
+  slot-shaped keys being created, but it could not touch the ones already
+  uploaded -- and each `<version>-slotN` object in a gist is a separate save,
+  so every sync recreated a local slot for every one of them. An install could
+  return to fifty-odd slots without a single new bad key being written.
+  - A slot-shaped key is now **never applied**. It names a slot on whichever
+    device wrote it, so nothing here can know which playthrough it meant, and
+    adopting one is exactly what creates a stray slot.
+  - **Clean up cloud** removes them. Every properly keyed save, its manifest
+    and its whole history are untouched; only slot-shaped keys go, together
+    with their history entries so nothing is orphaned. It writes nothing to
+    disk, so the local saves those objects were copied from cannot be harmed.
+
+### Added
+- **A sync the player asked for confirms itself**, with a `SYNCED` flash when
+  it lands -- from `Sync Now`, from `Try again`, and from `Sync now` on the
+  after-save prompt. A background cycle finishing is not news; pressing a
+  button and being told nothing is. A failed sync never reports itself as a
+  success, and never hands its confirmation to whichever background cycle
+  happens to succeed next.
+- The HUD flash now **measures** its text instead of looking up a position per
+  word, so a new flash cannot run off the right edge.
+
 ## [1.13.2] - 2026-08-12
 
 ### Fixed

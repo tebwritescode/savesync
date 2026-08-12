@@ -256,11 +256,20 @@ function Autosave.draw(Font, viewport)
   love.graphics.translate(viewport.gameX or 0, viewport.gameY or 0)
   love.graphics.scale(sx, sy)
   -- Top-right, clear of the dialog box and the HUD the world draws.
-  -- SNAPSHOT is one tile wider than SAVED, so it starts one tile further
-  -- left; both still land inside the same clear margin.
-  local x = flashText == "SNAPSHOT" and 96 or 112
+  -- MEASURED, not tabulated: the position used to be a lookup per word, so
+  -- any new flash text (SYNCED) took the default and ran off the right edge.
+  -- Glyphs are 8 wide; one glyph of margin keeps it off the border.
+  local x = 160 - 8 - (#flashText * 8)
+  if x < 0 then x = 0 end
   Font.draw(flashText, x, 6)
   love.graphics.pop()
+end
+
+--- Show the corner flash for something that is not a timer -- a sync the
+--- player asked for, landing. Same slot the SAVED/SNAPSHOT flashes use, so
+--- there is exactly one of these on screen and one copy of the draw code.
+function Autosave.flash(text)
+  flashUntil, flashText = now() + FLASH_SECONDS, tostring(text or "SAVED")
 end
 
 --- Seconds until the next auto save, or nil when off.  The screen shows this

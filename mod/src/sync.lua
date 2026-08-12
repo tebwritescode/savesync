@@ -130,6 +130,23 @@ Sync.encodeBlob, Sync.decodeBlob = encodeBlob, decodeBlob
 
 -- ------------------------------------------------------------ names
 
+--- A key that names a SLOT rather than a playthrough.
+---
+--- Builds up to 1.9.x keyed an unstamped save `<version>-<slotId>`, which
+--- means a different save on every device. Those keys are still sitting in
+--- players' clouds, and each one is a separate object -- so a device syncing
+--- against such a cloud creates one local slot per stray key, every time,
+--- which is how an install ends up with fifty pages of save slots even after
+--- the key scheme itself was fixed.
+---
+--- They cannot be interpreted: nothing on this device can know which
+--- playthrough `red-slot7` meant on the machine that wrote it. So they are
+--- never applied, and Clean Up Cloud can remove them.
+local function isLegacyKey(key)
+  key = tostring(key or "")
+  return key:match("^.+%-slot%d+$") ~= nil or key:match("^.+%-legacy$") ~= nil
+end
+
 local function savName(key) return key .. ".sav" end
 local function jsonName(key) return key .. ".json" end
 -- History entries carry the moment they were taken, because "version 3"
@@ -278,7 +295,10 @@ function Sync.cycle(opts)
     for key in pairs(locals) do keys[key] = true end
     for name in pairs(names) do
       local k = name:match("^(.+)%.json$")
-      if k then keys[k] = true end
+      -- A slot-shaped key is skipped rather than adopted: adopting one is
+      -- what creates a stray local slot, and it would create another on the
+      -- next cycle and the one after that.
+      if k and not isLegacyKey(k) then keys[k] = true end
     end
 
     -- Read every manifest in one call; providers that can answer in a single
@@ -475,6 +495,76 @@ end
 --- Keep this device's version: publish it over the cloud head.  Nothing is
 --- lost -- the cloud's version is already in cloud history, written there by
 --- the device that uploaded it.
+--- How many stray legacy objects the cloud is carrying.
+--- Counts, does not touch anything, so the UI can offer the cleanup only
+--- when there is something to clean and can say how much.
+function Sync.countLegacy()
+  local provider, conf = Sync.provider(), Store.config()
+  if not provider then return Op.failed("not connected") end
+  return Op.new(function(ctx)
+    local names = ctx:await(provider.list(conf.cfg))
+    persistProviderConfig()
+    local seen, n = {}, 0
+    for name in pairs(names) do
+      local k = name:match("^(.+)%.json$") or name:match("^(.+)%.sav$")
+        or name:match("^(.+)%.h%d+.*%.sav$")
+      if k and isLegacyKey(k) and not seen[k] then seen[k] = true n = n + 1 end
+    end
+    return n
+  end)
+end
+
+--- Delete every stray legacy object from the cloud.
+---
+--- WHY THIS IS SAFE TO DELETE. A `<version>-slotN` key names a slot on
+--- whichever device wrote it, so it identifies nothing here and nothing on
+--- any other device either -- there is no machine on which it can be
+--- restored to the right playthrough. It was written by a bug, and while it
+--- stays there every device that syncs grows another local save slot from it.
+---
+--- WHAT IS NOT TOUCHED. Every properly keyed save, its manifest and its whole
+--- history stay exactly as they are; only slot-shaped keys go. The local
+--- saves those objects were copied from are untouched by definition -- this
+--- writes nothing to disk.
+function Sync.cleanCloud()
+  local provider, conf = Sync.provider(), Store.config()
+  if not provider then return Op.failed("not connected") end
+  return Op.new(function(ctx)
+    local names = ctx:await(provider.list(conf.cfg))
+    persistProviderConfig()
+
+    local doomed, count = {}, 0
+    for name in pairs(names) do
+      -- Match on the OBJECT NAME, so a key's manifest, its save and every
+      -- history entry go together rather than leaving orphans behind.
+      local k = name:match("^(.+)%.json$") or name:match("^(.+)%.sav$")
+      if k then
+        k = k:gsub("%.h%d+.*$", "")
+        if isLegacyKey(k) then
+          doomed[name] = false     -- `false` is this API's delete
+          count = count + 1
+        end
+      end
+    end
+    if count == 0 then return 0 end
+
+    ctx:await(provider.write(conf.cfg, doomed))
+    persistProviderConfig()
+
+    -- Forget any local bookkeeping that pointed at them, so nothing tries to
+    -- reconcile a key that no longer exists anywhere.
+    local c = Store.config()
+    for key in pairs(c.keys or {}) do
+      if isLegacyKey(key) then c.keys[key] = nil end
+    end
+    for key in pairs(c.slotMap or {}) do
+      if isLegacyKey(key) then c.slotMap[key] = nil end
+    end
+    Store.saveConfig(c)
+    return count
+  end)
+end
+
 function Sync.resolveKeepLocal(key)
   local con = Sync.conflicts[key]
   local provider, conf = Sync.provider(), Store.config()
@@ -579,12 +669,16 @@ local function begin(newOp, working, done)
 end
 
 --- Ask for a sync.  `now` skips the debounce (the Sync Now button).
-function Sync.request(now, isBoot)
+--- `announce` marks a sync the PLAYER asked for, by name, and is what earns
+--- a confirmation when it lands. A background cycle finishing is not news;
+--- pressing Sync Now and being told nothing is.
+function Sync.request(now, isBoot, announce)
   if not Sync.configured() then return end
   if isBoot then
     Sync.boot = "checking"
     Sync.bootNote = nil
   end
+  if announce then Sync.announceNext = true end
   if now then
     dirtyAt = 0
     retryAt = 0
@@ -654,6 +748,13 @@ function Sync.update()
         elseif (r.downloaded or 0) > 0 then Sync.status = "Save downloaded"
         else Sync.status = "Up to date" end
       end
+      -- Read by the HUD, which owns the corner flash. Set only on the way
+      -- out of a SUCCESSFUL cycle the player asked for, so a failure never
+      -- reports itself as a sync.
+      if Sync.announceNext then
+        Sync.announceNext = nil
+        Sync.flash = "SYNCED"
+      end
       nextIdle = os.time() + IDLE_INTERVAL
     else
       if isOffline(value) then
@@ -671,6 +772,10 @@ function Sync.update()
           Sync.bootNote = tostring(value)
         end
       end
+      -- The request the player made is over; it failed, and the screen
+      -- says so. Leaving this armed would hand the confirmation to whatever
+      -- background cycle happened to succeed next.
+      Sync.announceNext = nil
       retryIndex = math.min(retryIndex + 1, #RETRY_STEPS)
       retryAt = os.time() + RETRY_STEPS[retryIndex]
     end

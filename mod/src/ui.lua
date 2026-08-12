@@ -312,7 +312,7 @@ return function(mod, cfgOpts)
         local offline = Sync.state == "offline" or Sync.state == "error"
         if not offline then
           items[#items + 1] = { "Sync Now", function()
-            Sync.request(true)
+            Sync.request(true, false, true)
             say("Syncing...")
           end }
         end
@@ -326,7 +326,7 @@ return function(mod, cfgOpts)
           -- One row that DOES something useful here: try the connection
           -- again, rather than leaving the player to guess when it recovers.
           items[#items + 1] = { "Try again", function()
-            Sync.request(true)
+            Sync.request(true, false, true)
             say("Trying again...")
           end }
         end
@@ -354,6 +354,13 @@ return function(mod, cfgOpts)
             c.auto = not c.auto
             Store.saveConfig(c)
           end }
+        -- Offered whenever a cloud is connected, because the count comes from
+        -- the cloud and asking for it costs a request. It reports "nothing to
+        -- clean" when there is nothing, which is the honest answer and a
+        -- cheap one.
+        items[#items + 1] = { "Clean up cloud", function()
+          goto_("cleanCloud")
+        end }
         items[#items + 1] = { "Disconnect", function() goto_("disconnect") end }
         return items
       end
@@ -672,6 +679,16 @@ return function(mod, cfgOpts)
         if self.view == "main" then return mainItems() end
         if self.view == "setup" then return setupItems() end
         if self.view == "preflight" then return preflightItems() end
+        if self.view == "cleanCloud" then
+          return {
+            { "Yes, clean it up", function()
+              self.cleanOp = Sync.cleanCloud()
+              say("Cleaning...")
+              goto_("main")
+            end },
+            { "No", function() goto_("main") end },
+          }
+        end
         if self.view == "pair" then return pairItems() end
         if self.view == "conflict" then return conflictItems() end
         if self.view == "disconnect" then
@@ -872,6 +889,23 @@ return function(mod, cfgOpts)
         end
 
         if self.view == "preflight" then self:pollPreflight() end
+
+        if self.cleanOp then
+          local st, value = self.cleanOp:poll()
+          if st == "ok" then
+            self.cleanOp = nil
+            local n = tonumber(value) or 0
+            if n > 0 then
+              say("Removed " .. n .. " stray saves. Sync to finish.")
+              Sync.request(true, false, true)
+            else
+              say("Nothing to clean up.")
+            end
+          elseif st == "error" then
+            self.cleanOp = nil
+            say(tostring(value))
+          end
+        end
 
         if self.linkOp then
           local st, value = self.linkOp:poll()
@@ -1136,6 +1170,11 @@ return function(mod, cfgOpts)
         elseif self.view == "confirmSnapRestore" and self.pendingSnapRestore then
           hdr("Restore this")
           hdr("snapshot?")
+        elseif self.view == "cleanCloud" then
+          hdr("Remove save entries")
+          hdr("left behind by the old")
+          hdr("slot naming? Your real")
+          hdr("saves stay.")
         elseif self.view == "preflight" then
           local pf = self.preflight or {}
           if pf.state == "checking" then

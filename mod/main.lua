@@ -107,6 +107,14 @@ mod.hooks:wrap("render.hud", function(next, game, viewport)
   -- never been set up, so it is not gated on Sync.configured().  Both calls
   -- are wrapped because a throw here would cost the player the frame.
   pcall(Autosave.update, game)
+  -- A sync the player asked for, confirming itself. Sync raises the flag on
+  -- the way out of a successful cycle; the HUD is the only thing that can
+  -- draw, so it is the only thing that clears it.
+  if Sync.flash then
+    local text = Sync.flash
+    Sync.flash = nil
+    pcall(Autosave.flash, text)
+  end
   pcall(Autosave.draw, mod.ui.Font, viewport)
 
   -- The prompt waits for the save script to finish and the world to settle.
