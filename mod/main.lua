@@ -59,9 +59,20 @@ do
   end
   -- Overridable for development, so a contributor can test a sign-in flow
   -- against their own OAuth app without editing a tracked file.
-  local envGithub = os.getenv("SAVESYNC_GITHUB_CLIENT_ID")
+  --
+  -- GUARDED, because os.getenv DOES NOT EXIST on iOS. LOVE's sandbox there
+  -- omits it, so calling it threw during mod load and took the entire mod
+  -- down before the game had even reached the title screen -- a developer
+  -- convenience costing every iOS player the whole feature. Anything reached
+  -- at load time has to survive the smallest platform the engine runs on.
+  local function env(name)
+    if type(os) ~= "table" or type(os.getenv) ~= "function" then return nil end
+    local ok, value = pcall(os.getenv, name)
+    return ok and value or nil
+  end
+  local envGithub = env("SAVESYNC_GITHUB_CLIENT_ID")
   if envGithub and envGithub ~= "" then clientIds.github = envGithub end
-  local envDropbox = os.getenv("SAVESYNC_DROPBOX_APP_KEY")
+  local envDropbox = env("SAVESYNC_DROPBOX_APP_KEY")
   if envDropbox and envDropbox ~= "" then clientIds.dropbox = envDropbox end
 end
 
@@ -106,10 +117,16 @@ end
 -- belongs here even more than it does in the Start menu.
 mod.hooks:wrap("ui.title_menu.items", function(next, game, items)
   pcall(function()
-    items[#items + 1] = {
+    -- Before EXIT GAME, not appended. Appending put SAVESYNC underneath the
+    -- way out, and EXIT belongs at the bottom of a menu -- that is where every
+    -- player's thumb already expects it. Anchored on the engine's own
+    -- localised string so a translated build orders correctly too.
+    local okS, Strings = pcall(require, "src.core.Strings")
+    local exitLabel = okS and Strings and Strings("EXIT GAME") or "EXIT GAME"
+    mod.ui.insertBefore(items, exitLabel, {
       label = "SAVESYNC",
       onSelect = function() openScreen(game) end,
-    }
+    })
     -- CONTINUE asks first when the boot check could not confirm this save is
     -- the current one. Loading a stale save is not data loss -- the conflict
     -- rule catches that -- but it costs the player every hour they then play

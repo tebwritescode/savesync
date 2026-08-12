@@ -397,6 +397,27 @@ return function(mod, cfgOpts)
       -- then a version of it is far easier to reason about than one flat list
       -- of every backup on the device, which on a multi-slot install is a
       -- wall of timestamps with no way to tell whose they are.
+      -- "RED 1 08-12 00:09" -- game, slot, then when it was taken.
+      local function restoreLabel(row)
+        local version = Store.versionOfKey(row.key)
+        local ver = tostring(version or "?"):upper():sub(1, 6)
+        local slot = tostring(row.slotId
+          or Store.findSlotForKey(version, row.key) or "?"):match("(%d+)$") or "?"
+        local when
+        if row.stamp then
+          -- cloud history stamp: "20260812-000913"
+          when = row.stamp:sub(5, 6) .. "-" .. row.stamp:sub(7, 8) .. " "
+            .. row.stamp:sub(10, 11) .. ":" .. row.stamp:sub(12, 13)
+        elseif row.when then
+          -- local backup: "2026-08-12 00:09" -- drop the year, it never helps
+          when = tostring(row.when):sub(6)
+        else
+          -- a history entry written before names carried a stamp
+          when = "v" .. tostring(row.seq or "?")
+        end
+        return ("%s %s %s"):format(ver, slot, when)
+      end
+
       local function loadLocalBackups(onlyKey)
         local rows = {}
         for key in pairs(Store.readAllLocal()) do
@@ -560,10 +581,11 @@ return function(mod, cfgOpts)
             -- months, not years, so the year is the part safe to drop; the
             -- tag is capped to four characters rather than relying on the
             -- fallback :sub() in the draw loop to cut a real word in half.
-            local label = row.where == "local"
-              and ((row.when and row.when:sub(6) or tostring(row.when))
-                   .. " " .. tostring(row.tag or ""):sub(1, 4))
-              or ("version " .. tostring(row.seq))
+            -- WHAT A PLAYER NEEDS IN ORDER TO PICK THE RIGHT ONE: which
+            -- game, which slot, and when. "version 3" answered none of
+            -- those. The game version leads because Gen 2 is coming and
+            -- "RED 1" will stop being the only thing on the list.
+            local label = restoreLabel(row)
             items[#items + 1] = { label, function()
               self.pendingRestore = row
               goto_("confirmRestore")

@@ -132,11 +132,21 @@ Sync.encodeBlob, Sync.decodeBlob = encodeBlob, decodeBlob
 
 local function savName(key) return key .. ".sav" end
 local function jsonName(key) return key .. ".json" end
-local function histName(key, seq) return ("%s.h%04d.sav"):format(key, seq) end
+-- History entries carry the moment they were taken, because "version 3"
+-- tells a player nothing about which one they want back. The sequence still
+-- leads so the name sorts and prunes by age.
+local function histName(key, seq)
+  return ("%s.h%04d-%s.sav"):format(key, seq, Util.stamp())
+end
 
+-- Reads both shapes: with the stamp, and the older "<key>.h0003.sav" written
+-- before it was added. History outlives the code that wrote it, so dropping
+-- the old form would make a player's existing versions unrestorable.
 local function parseHist(name)
-  local key, seq = name:match("^(.+)%.h(%d+)%.sav$")
-  return key, tonumber(seq)
+  local key, seq, stamp = name:match("^(.+)%.h(%d+)%-([%d%-]+)%.sav$")
+  if key then return key, tonumber(seq), stamp end
+  key, seq = name:match("^(.+)%.h(%d+)%.sav$")
+  return key, tonumber(seq), nil
 end
 
 -- Cloud object name for a snapshot: "<key>.s<local-name>".  <local-name> is
@@ -215,15 +225,17 @@ local function uploadFiles(rec, seq, parent, existingNames)
   files[jsonName(rec.key)] = Json.encode(manifestFor(rec, seq, parent))
   files[histName(rec.key, seq)] = encodeBlob(rec.bytes)
 
-  local seqs = {}
+  -- Prune by the name that is actually there. Rebuilding a name from the
+  -- sequence would miss every entry written in the other shape, and the
+  -- history would grow forever without anyone noticing.
+  local existing = {}
   for name in pairs(existingNames or {}) do
     local k, s = parseHist(name)
-    if k == rec.key and s then seqs[#seqs + 1] = s end
+    if k == rec.key and s then existing[#existing + 1] = { seq = s, name = name } end
   end
-  seqs[#seqs + 1] = seq
-  table.sort(seqs, function(a, b) return a > b end)
-  for i = KEEP_HISTORY + 1, #seqs do
-    files[histName(rec.key, seqs[i])] = false
+  table.sort(existing, function(a, b) return a.seq > b.seq end)
+  for i = KEEP_HISTORY, #existing do
+    files[existing[i].name] = false
   end
   return files
 end
@@ -522,8 +534,10 @@ function Sync.history(key)
     persistProviderConfig()
     local out = {}
     for name, size in pairs(names) do
-      local k, seq = parseHist(name)
-      if k == key then out[#out + 1] = { name = name, seq = seq, size = size } end
+      local k, seq, stamp = parseHist(name)
+      if k == key then
+        out[#out + 1] = { name = name, seq = seq, size = size, stamp = stamp }
+      end
     end
     table.sort(out, function(a, b) return a.seq > b.seq end)
     return out

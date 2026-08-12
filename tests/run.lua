@@ -161,6 +161,55 @@ check("dropbox: asks for offline access",
 check("dropbox: sends no scope parameter",
   authUrl:find("scope=", 1, true) == nil)
 
+
+-- ------------------------------------------------- platform sandboxing
+
+-- A REAL iOS CRASH LIVES HERE.
+--
+-- `os.getenv` is absent on the iOS build, so an unguarded call in main.lua
+-- threw while the mod was loading and every iOS player saw
+-- "attempt to call field 'getenv' (a nil value)" in the mod manager instead
+-- of the mod. It cost nothing on desktop and everything on a phone.
+--
+-- The engine itself calls os.getenv freely, so this cannot be tested by
+-- removing the function -- the harness needs it. Assert the rule at the
+-- source instead: anything the mod reaches on a phone goes through a guard.
+local SANDBOXED = { "os%.getenv", "os%.execute", "io%.popen", "os%.tmpname" }
+local MOD_FILES = {
+  "main.lua", "src/sync.lua", "src/store.lua", "src/ui.lua", "src/gate.lua",
+  "src/snapshot.lua", "src/autosave.lua", "src/util.lua", "src/pairing.lua",
+  "src/op.lua", "src/json.lua",
+  "src/providers/init.lua", "src/providers/github.lua",
+  "src/providers/dropbox.lua", "src/providers/server.lua",
+  "src/providers/gdrive.lua",
+}
+for _, file in ipairs(MOD_FILES) do
+  local fh = io.open(ROOT .. file, "rb")
+  check("readable: " .. file, fh ~= nil)
+  if fh then
+    local src = fh:read("*a")
+    fh:close()
+    -- Strip the guard itself before searching, so the one place that DOES
+    -- name os.getenv -- to test for it before calling -- is not a false hit.
+    local cleaned = src
+      -- Comments first: the guard's own explanation names os.getenv, and a
+      -- scanner cannot tell prose from a call site.
+      :gsub("%-%-[^\r\n]*", "")
+      :gsub('type%(os%.getenv%) ~= "function"', "")
+      :gsub("pcall%(os%.getenv, name%)", "")
+    for _, pattern in ipairs(SANDBOXED) do
+      check(("%s has no unguarded %s"):format(file, (pattern:gsub("%%", ""))),
+        cleaned:find(pattern) == nil,
+        "absent on iOS -- guard it or the mod fails to load there")
+    end
+  end
+end
+
+-- And the one environment read the mod does make must be behind that guard.
+local mainSrc = assert(io.open(ROOT .. "main.lua", "rb")):read("*a")
+check("main.lua guards its environment read",
+  mainSrc:find('type%(os%.getenv%) ~= "function"') ~= nil)
+
 -- --------------------------------------------------- the decision table
 
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")

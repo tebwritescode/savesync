@@ -329,7 +329,16 @@ eq("A syncs cleanly", st, "idle")
 check("cloud has the save", cloud.files["red-PLAY0001.sav"] ~= nil,
   table.concat(cloudKeys(), ", "))
 check("cloud has a manifest", cloud.files["red-PLAY0001.json"] ~= nil)
-check("cloud has a history entry", cloud.files["red-PLAY0001.h0001.sav"] ~= nil)
+-- History names carry a timestamp now ("...h0001-20260812-000913.sav"), so
+-- match the shape rather than a literal name.
+local function isHistory(name)
+  return name:match("^red%-PLAY0001%.h%d+[%d%-]*%.sav$") ~= nil
+end
+local haveHistory = false
+for name in pairs(cloud.files) do
+  if isHistory(name) then haveHistory = true end
+end
+check("cloud has a history entry", haveHistory)
 
 -- Only save-shaped names, ever.  This is the "never upload ROMs" guarantee
 -- expressed as a test: the engine builds its upload set from save slots, so
@@ -386,7 +395,7 @@ check("cloud now holds B's version",
 
 local historyHasA = false
 for name, body in pairs(cloud.files) do
-  if name:match("^red%-PLAY0001%.h%d+%.sav$")
+  if isHistory(name)
       and (A.Sync.decodeBlob(body) or ""):find('"badges"%]=3') then
     historyHasA = true
   end
@@ -412,7 +421,7 @@ for badges = 6, 20 do
 end
 local hist = 0
 for name in pairs(cloud.files) do
-  if name:match("^red%-PLAY0001%.h%d+%.sav$") then hist = hist + 1 end
+  if isHistory(name) then hist = hist + 1 end
 end
 check("history is bounded", hist <= 10, "kept " .. hist)
 check("current save is still there", cloud.files["red-PLAY0001.sav"] ~= nil)

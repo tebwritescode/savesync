@@ -123,7 +123,7 @@ function waitFor(url, deadlineMs = 10000) {
       const { files } = await res.json();
       const names = Object.keys(files).sort();
       const current = names.filter((n) => /^red-E2E00001\.(sav|json)$/.test(n));
-      const history = names.filter((n) => /^red-E2E00001\.h\d+\.sav$/.test(n));
+      const history = names.filter((n) => /^red-E2E00001\.h\d+[\d-]*\.sav$/.test(n));
       const strays = names.filter((n) => !n.startsWith('red-E2E00001.'));
 
       console.log(`[${run.osName}] server holds: ${names.join(', ')}`);

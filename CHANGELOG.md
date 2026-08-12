@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.1] - 2026-08-12
+
+### Fixed
+- **The mod would not load on iOS at all.** `os.getenv` is absent there, and
+  an unguarded call to it -- a developer convenience for overriding an OAuth
+  client id -- threw while the mod was loading, so every iOS player got
+  `attempt to call field 'getenv' (a nil value)` in the mod manager instead of
+  the mod. It cost nothing on desktop and everything on a phone. The read is
+  guarded, and a test now scans every mod source for unguarded `os.getenv`,
+  `os.execute`, `io.popen` and `os.tmpname`, because the engine itself uses
+  them freely and the rule only applies to the mod.
+- **EXIT is the bottom of the title menu again.** The SAVESYNC row was
+  appended, which put it underneath the way out. It is now anchored before
+  `EXIT GAME`, matched on the engine's localised string so translated builds
+  order correctly too.
+- **Restore entries say what they are.** They read `RED 1 08-12 00:09` -- game,
+  slot, then when it was taken -- rather than `version 3`, which answered none
+  of the three questions a player has. Cloud history filenames now carry their
+  timestamp; the older shape is still read, so versions saved by an earlier
+  build stay restorable.
+  - The game version leads because Gen 2 is on the horizon and `RED 1` will
+    stop being the only thing on the list.
+
 ## [1.7.0] - 2026-08-11
 
 ### Added
