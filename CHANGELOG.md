@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-08-12
+
+### Fixed
+- **The restore list froze the game.** Reported from a device that had to be
+  force quit. Each row's label looked up which slot a save belonged to, and
+  that lookup read and Lua-decoded *every save slot on disk* -- while
+  `currentItems()` runs three times a frame. Ten backups across three slots
+  came to roughly ninety full save decodes per frame.
+  - Labels are now built once, when the list is built, from a single pass over
+    the slots. The per-frame path only reads a string.
+  - A test drives thirty frames of the restore list and asserts it touches the
+    disk **zero** times. Put the lookup back in the label and it reports 600.
+- **Older cloud objects still restore.** Payloads gained a `b64:` prefix and
+  history filenames gained a timestamp; anything written before those changes
+  is still listed and still restorable, now with a test that writes an
+  old-shape entry by hand and restores it. History outlives the code that
+  wrote it, and refusing the old form would turn a player's existing backups
+  into nothing on the day they finally needed one.
+
 ## [1.8.0] - 2026-08-12
 
 ### Fixed after release

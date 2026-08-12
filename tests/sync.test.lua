@@ -994,5 +994,48 @@ for _, row in ipairs(conflicted) do
   if row.key == found.key then eq("a conflict is surfaced", row.status, "conflict") end
 end
 
+-- 14. OLD SAVES AND OLD CLOUD OBJECTS MUST STILL RESTORE.
+--
+-- History outlives the code that wrote it. Two shapes changed after the
+-- first release -- payloads gained a "b64:" prefix and history filenames
+-- gained a timestamp -- and a player who has been using this for weeks holds
+-- objects in the older form. Refusing those would quietly turn their backups
+-- into nothing on the day they finally need one.
+
+activate(A)
+
+-- An old-style raw payload (no b64: prefix) decodes as itself.
+eq("a pre-b64 payload still decodes",
+  A.Sync.decodeBlob("return {[\"version\"]=\"red\"}"), "return {[\"version\"]=\"red\"}")
+
+-- An old-style history object (no timestamp in the name) is still listed and
+-- still restorable. Write one by hand, exactly as an older build would have.
+local oldName = "red-PLAY0001.h0009.sav"
+cloud.files[oldName] = A.Sync.encodeBlob(
+  serialize({ version = "red", player = { name = "OLD" }, badges = 9,
+              meta = { playthroughId = "PLAY0001", savedAt = 1 } }))
+
+local histOp = A.Sync.history("red-PLAY0001")
+local found
+for _ = 1, 4000 do
+  local st, v = histOp:poll()
+  if st ~= "pending" then found = (st == "ok") and v or nil break end
+end
+local sawOld = false
+for _, h in ipairs(found or {}) do
+  if h.name == oldName then sawOld = true end
+end
+check("an old-shape history entry is still listed", sawOld)
+
+-- And restoring it puts the old save back on disk.
+local rop = A.Sync.restoreHistory("red-PLAY0001", oldName)
+local restored
+for _ = 1, 4000 do
+  local st, v = rop:poll()
+  if st ~= "pending" then restored = (st == "ok") break end
+end
+check("an old-shape history entry still restores", restored == true)
+eq("and the old save is what landed", localSave(A).player.name, "OLD")
+
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

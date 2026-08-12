@@ -286,5 +286,41 @@ do
   end
 end
 
+-- ---- THE PER-FRAME BUDGET.
+-- A restore list froze the game hard enough to need a force quit: each row's
+-- label called a slot lookup that read and decoded EVERY save on disk, and
+-- currentItems() runs three times a frame. Nothing in the per-frame path may
+-- touch the disk; labels are built once when the list is built.
+do
+  local Store = exports and exports.store
+  if Store then
+    local realReadAll = Store.readAllLocal
+    local calls = 0
+    Store.readAllLocal = function(...) calls = calls + 1 return realReadAll(...) end
+
+    local pressed = {}
+    local game = {
+      input = { wasPressed = function(_, k) return pressed[k] == true end },
+      stack = { states = {}, pop = function(s) table.remove(s.states) end },
+    }
+    local ok, screen = pcall(Data.screens.SaveSync.new, game)
+    if ok and screen then
+      screen.view = "restoreList"
+      screen.list = {}
+      for i = 1, 10 do
+        screen.list[i] = { key = "red-TEST0001", name = "n" .. i,
+                           when = "2026-08-12 00:0" .. (i % 10),
+                           where = "local", label = "RED 1 08-12 00:0" .. (i % 10) }
+      end
+      calls = 0
+      for _ = 1, 30 do pcall(screen.update, screen, 0.016) end
+      T.eq(calls, 0, "30 frames of the restore list read the disk zero times")
+    else
+      T.check(false, "screen constructs for the per-frame budget test")
+    end
+    Store.readAllLocal = realReadAll
+  end
+end
+
 r.release()
 T.finish("savesync load")

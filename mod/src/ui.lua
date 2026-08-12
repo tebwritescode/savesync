@@ -405,11 +405,18 @@ return function(mod, cfgOpts)
       -- of every backup on the device, which on a multi-slot install is a
       -- wall of timestamps with no way to tell whose they are.
       -- "RED 1 08-12 00:09" -- game, slot, then when it was taken.
-      local function restoreLabel(row)
+      -- NEVER CALL THIS PER FRAME. It is built once per list, because
+      -- currentItems() runs three times a frame (twice in update, once in
+      -- draw) and the slot lookup it used to do read and decoded EVERY save
+      -- slot on disk. Ten backups by three slots by three calls was ninety
+      -- full save decodes a frame, which froze the game hard enough to need
+      -- a force quit. Labels are now computed when the list is built and
+      -- stored on the row; the per-frame path only reads a string.
+      local function restoreLabel(row, slotByKey)
         local version = Store.versionOfKey(row.key)
         local ver = tostring(version or "?"):upper():sub(1, 6)
         local slot = tostring(row.slotId
-          or Store.findSlotForKey(version, row.key) or "?"):match("(%d+)$") or "?"
+          or (slotByKey and slotByKey[row.key]) or "?"):match("(%d+)$") or "?"
         local when
         if row.stamp then
           -- cloud history stamp: "20260812-000913"
@@ -423,6 +430,13 @@ return function(mod, cfgOpts)
           when = "v" .. tostring(row.seq or "?")
         end
         return ("%s %s %s"):format(ver, slot, when)
+      end
+
+      -- One pass over the slots for the whole list, rather than one per row.
+      local function slotLookup()
+        local map = {}
+        for key, rec in pairs(Store.readAllLocal()) do map[key] = rec.slotId end
+        return map
       end
 
       local function loadLocalBackups(onlyKey)
@@ -439,6 +453,8 @@ return function(mod, cfgOpts)
         -- restore; the list above only walks live saves, which is the case
         -- that matters and keeps this from scanning the whole folder tree.
         table.sort(rows, function(a, b) return a.name > b.name end)
+        local map = slotLookup()
+        for _, row in ipairs(rows) do row.label = restoreLabel(row, map) end
         return rows
       end
 
@@ -588,11 +604,8 @@ return function(mod, cfgOpts)
             -- months, not years, so the year is the part safe to drop; the
             -- tag is capped to four characters rather than relying on the
             -- fallback :sub() in the draw loop to cut a real word in half.
-            -- WHAT A PLAYER NEEDS IN ORDER TO PICK THE RIGHT ONE: which
-            -- game, which slot, and when. "version 3" answered none of
-            -- those. The game version leads because Gen 2 is coming and
-            -- "RED 1" will stop being the only thing on the list.
-            local label = restoreLabel(row)
+            -- Precomputed when the list was built; see restoreLabel.
+            local label = row.label or "?"
             items[#items + 1] = { label, function()
               self.pendingRestore = row
               goto_("confirmRestore")
@@ -678,7 +691,12 @@ return function(mod, cfgOpts)
             self.list = {}
             for _, h in ipairs(value) do
               self.list[#self.list + 1] = { key = self.historyKey,
-                name = h.name, seq = h.seq, where = "cloud" }
+                name = h.name, seq = h.seq, stamp = h.stamp, where = "cloud" }
+            end
+            -- Same rule as the local list: label once, here, not per frame.
+            local map = slotLookup()
+            for _, row in ipairs(self.list) do
+              row.label = restoreLabel(row, map)
             end
             if #self.list == 0 then say("No older versions in the cloud yet.") end
           elseif st == "error" then
