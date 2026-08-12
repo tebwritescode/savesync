@@ -5,6 +5,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [1.8.0] - 2026-08-12
 
+### Fixed after release
+- **The v1.8.0 zip carried a 1.7.1 manifest.** The version was bumped in the
+  source *after* the mod had been copied into the engine checkout, so `modkit
+  pack` faithfully packaged the stale copy: the launcher offered the update,
+  installed it, and then reported the old version, with no error anywhere.
+  Both release assets were rebuilt and replaced.
+- `tools/release.sh` now makes that impossible. It copies **after** checking
+  the source manifest, then reads the version back **out of the finished zip**
+  and refuses to hand over an artifact that disagrees with the version asked
+  for -- verifying the artifact rather than the intent. It also checks
+  `main.lua` sits at the archive root, which the loader requires.
+
 ### Added
 - **SaveSync lives in OPTIONS now**, with its state in the value column
   (`ON` / `SYNCING` / `OFFLINE` / `ASK`), so you can see whether your save is
