@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.1] - 2026-08-12
+
+### Changed
+- The OPTIONS row reads **`SAVESYNC   OPEN`**. Every other row on that screen
+  changes a setting in place, so a status word in the value column read like
+  one more thing this row could be cycled through. It is a door, and now says
+  so. The state it used to show lives on the screen the row opens, where there
+  is room to say it in words rather than in seven characters.
+
 ## [1.10.0] - 2026-08-12
 
 ### Fixed

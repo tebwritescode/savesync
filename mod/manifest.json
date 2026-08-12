@@ -1,7 +1,7 @@
 {
   "id": "savesync",
   "name": "SaveSync",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "author": "Teb",
   "description": "Automatic cross-device saves for Gen1Recomp - your save follows you to every device you play on, stored on free space that belongs to you.",
   "api": 2,

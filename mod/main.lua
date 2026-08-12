@@ -158,23 +158,18 @@ end)
 -- so one row here replaces two and stops the mod squatting on a menu the
 -- vanilla game keeps short on purpose.
 --
--- The row carries its state in the value column, so a player can see whether
--- their save is safe without opening anything.
-local function statusWord()
-  if not Sync.configured() then return "OFF" end
-  if Sync.state == "conflict" then return "ASK" end
-  if Sync.state == "offline" then return "OFFLINE" end
-  if Sync.state == "error" then return "ERROR" end
-  if Sync.state == "working" then return "SYNCING" end
-  return "ON"
-end
-
+-- The row reads SAVESYNC / OPEN, because that is what it does: every other
+-- row on this screen changes a setting in place, and this one is a door. A
+-- status word in the value column read like something the row could be
+-- cycled through, which is exactly what the rows either side of it do. The
+-- state it used to show lives on the screen the row opens, where there is
+-- room to say it in words rather than in seven characters.
 mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   pcall(function()
     rows[#rows + 1] = {
       id = "savesync",
       label = "SAVESYNC",
-      value = function() return statusWord() end,
+      value = function() return "OPEN" end,
       activate = function(g) openScreen(g or game) end,
     }
   end)

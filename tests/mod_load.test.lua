@@ -81,8 +81,11 @@ for _, r in ipairs(optionRows or {}) do
   if r.id == "savesync" then
     hasOption = true
     T.check(type(r.activate) == "function", "the options row opens the screen")
-    T.eq(r.value and r.value({}), "OFF",
-      "and shows its state, OFF until it is set up")
+    -- OPEN, not a status word: every other row here changes a setting in
+    -- place, and a state in the value column read like one this row could be
+    -- cycled through too.
+    T.eq(r.value and r.value({}), "OPEN",
+      "and reads OPEN, because it is a door rather than a setting")
   end
 end
 T.check(hasOption, "adds a SAVESYNC row to OPTIONS")
