@@ -5,8 +5,8 @@ is the authority: https://github.com/bryanthaboi/gen1recomp/wiki/Guide-Publishin
 
 ## The surfaces, in order
 
-1. **Gitea** (`http://10.94.18.85/Teb/<repo>`) — every commit, full history,
-   semver tags. This is the source of truth and needs no approval.
+1. **The private remote** (`origin`) — every commit, full history, semver
+   tags. This is the source of truth and needs no approval.
 2. **GitHub** (`tebwritescode/<repo>`) — on Teb's explicit go, per artifact.
    New repos go up as a single squashed commit; established repos keep
    their public history.
