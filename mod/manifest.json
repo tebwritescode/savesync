@@ -1,17 +1,19 @@
 {
   "id": "savesync",
   "name": "SaveSync",
-  "version": "1.15.1",
+  "version": "2.0.0",
   "author": "Teb",
-  "description": "Automatic cross-device saves for Gen1Recomp - your save follows you to every device you play on, stored on free space that belongs to you.",
+  "description": "Your save follows you to every device - five free cloud slots on the official server, one account shared with Gen1MMO, and nothing ever replaces a save without asking you first.",
   "api": 2,
   "game_version": ">=0.2.0",
+  "games": [
+    "all"
+  ],
   "entry": "main.lua",
   "permissions": [
     "network",
     "filesystem",
-    "engine_internals",
-    "compute"
+    "engine_internals"
   ],
   "tags": [
     "tools",

@@ -3,6 +3,50 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-08-19
+
+SaveSync now syncs through the official server -- the same server, the
+same encrypted tunnel and the SAME ACCOUNT as Gen1MMO. One name and
+password serves both mods; register in either and log into the other.
+
+### Added
+- **Five free cloud slots per account.** The player decides what lives in
+  each: any game, any playthrough. The slots screen shows each slot's game,
+  trainer, progress and days until expiry.
+- **Accounts with recovery codes.** No email, no PII: register with a name
+  and password, get a one-time recovery code (write it down -- if the
+  password AND the code are lost, the account is gone; nobody can restore
+  it, which is what keeps it yours). Registering a taken name says it
+  plainly: SaveSync and Gen1MMO share accounts -- if it's yours, just log
+  in.
+- **Saves expire after 30 days untouched.** The server keeps space for
+  active players; an expired save shows as EXPIRED in its slot (never a
+  silent hole), the account remains, and re-uploading revives the slot.
+  Every slot shows its countdown in-game.
+- **Nothing replaces a save without asking.** New progress uploads by
+  itself after you save; everything else is a question. A slot bound to a
+  different adventure refuses bytes until you confirm; a slot another
+  device moved shows both sides and asks; downloads always confirm; and
+  the server enforces the same rules independently, so even a modified
+  client cannot overwrite your progress unasked.
+- **Gold support.** The mod loads on Gen 2, and every save carries its
+  game + playthrough identity, so Red, Yellow and Gold saves -- and two
+  playthroughs of the same game -- can never land on each other.
+- **Autosave slot picker.** Autosave can write to a slot of your choosing
+  instead of the active save file, which makes autosave and soft-reset
+  play coexist completely.
+- **Works on every device the game runs on.** The transport is a plain
+  socket with the tunnel's own encryption (X25519 + ChaCha20-Poly1305,
+  server identity pinned in the mod source) -- no curl, no worker
+  threads, no platform TLS. Android and iOS use the same code as desktop.
+
+### Removed
+- GitHub, Dropbox and self-hosted providers, OAuth device flows, pairing
+  codes, and the bundled server. Saves live on the official server now;
+  running your own gen1mmo-server still works via the config file.
+- The `compute` permission (no more worker threads) -- the manifest is
+  back to network + filesystem + engine_internals.
+
 ## [1.15.1] - 2026-08-18
 
 ### Fixed

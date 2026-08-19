@@ -26,7 +26,7 @@
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Util = SAVESYNC_INCLUDE("src/util.lua")
-local Http = SAVESYNC_INCLUDE("src/http.lua")
+local Link = SAVESYNC_INCLUDE("src/serverlink.lua")
 
 -- How long CONTINUE will wait for an in-flight boot check before asking the
 -- player instead. Long enough for a healthy connection to answer, short
@@ -43,27 +43,17 @@ function Gate.needed()
   if not Sync.configured() then return false end
   if Store.config().auto == false then return false end
 
-  -- NEVER HOLD THE PLAYER ON A CHECK THAT CANNOT FINISH.
-  --
-  -- Two cases, both of which used to stop CONTINUE every single launch and
-  -- say "could not check your cloud saves" on a device with a perfectly good
-  -- internet connection:
-  --
-  -- 1. THE PROVIDER IS UNREACHABLE FROM THIS BUILD AT ALL. GitHub and Dropbox
-  --    need TLS, and a build with no TLS transport will never reach them --
-  --    not now, not on the next launch. Warning about a stale save implies
-  --    waiting might help. It will not, so the warning is pure noise; the
-  --    SaveSync screen is where that belongs, said once.
-  -- 2. REQUESTS RUN ON THE MAIN THREAD. Where there are no worker threads the
-  --    transport blocks, and the boot check would freeze the game on this
-  --    very screen while the player waits on it. A gate whose progress
-  --    depends on a blocking call is a lock-up with a menu drawn over it.
-  local provider = Sync.provider()
-  if provider and provider.needsTls and not Http.tlsCapable() then return false end
-  if Http.isInline() then return false end
+  -- NEVER HOLD THE PLAYER ON A CHECK THAT CANNOT FINISH: a device with no
+  -- socket transport at all will not reach the server on this launch or any
+  -- other, so warning about staleness here is pure noise -- the SaveSync
+  -- screen says it once instead.
+  if not Link.transportAvailable() then return false end
 
+  -- "behind" is the one state that CHANGES what CONTINUE should offer: the
+  -- server holds news for a save on this device, and per the design a
+  -- download is always a question -- this screen is where it gets asked.
   return Sync.boot == "checking" or Sync.boot == "offline"
-    or Sync.boot == "error"
+    or Sync.boot == "error" or Sync.boot == "behind"
 end
 
 -- ------------------------------------------------- the after-save prompt
@@ -175,6 +165,9 @@ function Gate.install(mod)
       function self:update(_dt)
         Sync.update()
 
+        -- a chosen download in flight: pump until its callback pops us
+        if self.pulling then return end
+
         if Sync.boot == "ok" then
           -- The answer arrived while the player was reading. Nothing to warn
           -- about, so do not make them acknowledge a screen that no longer
@@ -212,6 +205,26 @@ function Gate.install(mod)
       end
 
       function self:items()
+        if Sync.boot == "behind" then
+          -- The always-ask rule, at the moment it matters most: the server
+          -- has a newer save for this device. Adopting it is offered, never
+          -- forced, and never silent.
+          return {
+            { "Use server save", function()
+              local key, slot = next(Sync.bootNews or {})
+              if key then
+                Sync.pull(slot, key, function(ok)
+                  if ok then go() else back() end
+                end)
+                self.pulling = true
+              else
+                go()
+              end
+            end },
+            { "Play this one", go },
+            { "Back", back },
+          }
+        end
         return {
           { "Play anyway", go },
           { "Back", back },
@@ -226,9 +239,16 @@ function Gate.install(mod)
           and (now() - self.startedAt) < WAIT_SECONDS
 
         local lines
-        if waiting then
+        if self.pulling then
+          lines = { "Fetching the server", "save..." }
+        elseif waiting then
           lines = { "Checking for a newer", "save on your other",
                     "devices...", "", "B: skip and play" }
+        elseif Sync.boot == "behind" then
+          lines = { "The server has a",
+                    "NEWER save for this",
+                    "game, from another",
+                    "device or session." }
         elseif Sync.boot == "offline" then
           -- Name the risk in the player's terms. "Offline" alone does not
           -- tell anyone why they should care.

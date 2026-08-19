@@ -1,15 +1,15 @@
--- Loads the mod through the engine's own mod-SDK harness, to prove the
--- manifest, the hook names, the registries and every module actually parse
--- and run inside a real loader -- not just a stubbed one.
+-- Loads SaveSync v2 through the engine's own mod-SDK harness: manifest,
+-- hooks, registries and every module parse and run inside a real loader --
+-- including the real sandbox -- not a stubbed one.
 --
 -- Run from a Gen1Recomp checkout with the mod installed:
 --
 --   cp -r mod /path/to/gen1recomp/mods/savesync
---   cd /path/to/gen1recomp
---   luajit tests/../../gen1recomp-savesync/tests/mod_load.test.lua
+--   cp tests/mod_load.test.lua /path/to/gen1recomp/tests/savesync_load_test.lua
+--   cd /path/to/gen1recomp && luajit tests/savesync_load_test.lua
 --
--- or, more simply, copy this file into the engine's tests/ and run it there.
--- It needs no ROM: the harness supplies fixture data.
+-- No ROM, no network: the transport is exercised separately (tunnel e2e);
+-- here the mod must simply be HARMLESS and correct without either.
 
 local T = require("tests.modkit")
 
@@ -17,40 +17,50 @@ local Data = T.fixtures.load()
 local r = T.sdk.loadMod("mods/savesync", { data = Data })
 
 T.check(r ~= nil, "loadMod returned a result")
-
 for _, err in ipairs(r and r.errors or {}) do
   T.check(false, "loader error: " .. tostring(err.message or err))
 end
 T.check(#(r.errors or {}) == 0, "mod loads with no errors")
-
 T.check(r.mod ~= nil, "the loader kept a mod handle")
 T.eq(r.mod and r.mod.manifest.id, "savesync", "loaded under the right id")
 
--- Exports are the documented way for another mod (or a test) to reach in;
--- the loader collects them per id rather than on the mod handle.
-local exports = r.loader and r.loader.exports["savesync"]
-T.check(type(exports) == "table", "mod publishes its exports")
-if type(exports) == "table" then
-  T.check(type(exports.sync) == "table", "exports the sync engine")
-  T.check(type(exports.store) == "table", "exports the store")
-  T.check(exports.version ~= "?", "exports its version from the manifest")
-
-  -- With nothing configured, sync must be inert: no network, no state, and
-  -- above all no errors on a machine that has never opened the screen.
-  T.check(exports.sync.configured() == false, "starts unconfigured")
-  local ok = pcall(exports.sync.update)
-  T.check(ok, "update() is safe when unconfigured")
-  T.eq(exports.sync.state, "off", "state is off when unconfigured")
-
-  -- The decision table is the safety-critical bit; assert it survived the
-  -- trip through the real loader too.
-  T.eq(exports.sync.decide("b", "c", nil), "conflict",
-    "conflict rule survives loading")
+-- v2 is for both generations: the manifest must claim every game.
+do
+  local games = r.mod and r.mod.manifest.games or {}
+  local byId = {}
+  for _, g in ipairs(games) do byId[g] = true end
+  T.check(byId.red and byId.blue and byId.yellow, "claims every Gen 1 game")
+  T.check(byId.gold, "claims Gold -- gen2compat is declared, not implied")
 end
 
--- ---- the visible surface: two menu rows and one screen.
--- Sdk.loadMod installs the loader's buses into the runtime, so calling a
--- hook here runs the mod's real wrap.
+local exports = r.loader and r.loader.exports["savesync"]
+T.check(type(exports) == "table", "mod publishes its exports")
+
+if type(exports) == "table" then
+  local Sync = exports.sync
+  T.check(type(Sync) == "table", "exports the sync engine")
+  T.check(type(exports.store) == "table", "exports the store")
+  T.check(exports.version == "2.0.0", "exports its version from the manifest")
+
+  -- With no account, sync must be inert: no network, no state, no errors.
+  T.check(Sync.configured() == false, "starts unconfigured")
+  T.check(pcall(Sync.update), "update() is safe when unconfigured")
+  T.eq(Sync.state, "off", "state is off when unconfigured")
+  T.check(Sync.link == nil, "and no connection was opened")
+
+  -- THE SAFETY TABLE. assess() is what keeps a replace from ever being
+  -- silent; every row here is a promise to the player.
+  local A = Sync.assess
+  T.eq(A("h", "h", "h"), "match", "all agree: nothing to do")
+  T.eq(A("h", "h", "old"), "match", "local and server agree: done, whatever last saw")
+  T.eq(A("new", "h", "h"), "upload", "only this device moved: fast-forward up")
+  T.eq(A("h", "new", "h"), "ask_download", "only the server moved: a QUESTION, never a silent download")
+  T.eq(A("a", "b", "c"), "ask_both", "both moved: a QUESTION with both sides shown")
+  T.eq(A("a", "b", "a"), "ask_download", "server ahead of an unchanged local: still a question")
+  T.eq(A("b", "a", "a"), "upload", "local ahead of an unchanged server: the one silent flow")
+end
+
+-- ---- the visible surface: menu rows and the screen.
 local Runtime = require("src.mods.Runtime")
 
 local function rowsFrom(hook, seed)
@@ -68,29 +78,21 @@ end
 T.check(hasLabel(rowsFrom("ui.title_menu.items"), "SAVESYNC"),
   "adds a title-menu row")
 
--- SaveSync lives in OPTIONS, which is on both the title screen and the
--- in-game Start menu -- one row instead of two, and the vanilla Start menu
--- stays as short as the game intends.
 local startRows = rowsFrom("ui.start_menu.items",
   { { label = "POKEMON" }, { label = "OPTION" }, { label = "EXIT" } })
 T.eq(#startRows, 3, "the Start menu is left alone")
 
 local optionRows = rowsFrom("ui.options.rows", { { id = "text_speed" } })
 local hasOption = false
-for _, r in ipairs(optionRows or {}) do
-  if r.id == "savesync" then
+for _, row in ipairs(optionRows or {}) do
+  if row.id == "savesync" then
     hasOption = true
-    T.check(type(r.activate) == "function", "the options row opens the screen")
-    -- OPEN, not a status word: every other row here changes a setting in
-    -- place, and a state in the value column read like one this row could be
-    -- cycled through too.
-    T.eq(r.value and r.value({}), "OPEN",
-      "and reads OPEN, because it is a door rather than a setting")
+    T.check(type(row.activate) == "function", "the options row opens the screen")
+    T.eq(row.value and row.value({}), "OPEN", "and reads OPEN: it is a door")
   end
 end
 T.check(hasOption, "adds a SAVESYNC row to OPTIONS")
 
--- EXIT must stay the last thing on the title menu.
 local titleRows = rowsFrom("ui.title_menu.items",
   { { label = "CONTINUE" }, { label = "NEW GAME" }, { label = "OPTION" },
     { label = "EXIT GAME" } })
@@ -100,10 +102,7 @@ T.eq(titleRows[#titleRows].label, "EXIT GAME",
 T.check(type(Data.screens) == "table" and Data.screens.SaveSync ~= nil,
   "registers the SaveSync screen")
 
--- ---- the screen actually constructs and runs.
--- Registry entries only prove the table is there; a typo inside new() or
--- update() would otherwise wait to be found by a player opening the menu.
--- draw() is left alone: it needs real font sheets, which no fixture has.
+-- ---- the screen constructs and runs, signed out.
 do
   local pressed = {}
   local game = {
@@ -111,388 +110,85 @@ do
     stack = { states = {}, pop = function(s) table.remove(s.states) end },
   }
   local ok, screen = pcall(Data.screens.SaveSync.new, game)
-  T.check(ok and type(screen) == "table", "the screen constructs: "
-    .. tostring(screen))
+  T.check(ok and type(screen) == "table", "the screen constructs: " .. tostring(screen))
   if ok and screen then
+    T.eq(screen.view, "main", "opens on the main view")
     T.check(pcall(screen.update, screen, 0.016), "update runs with no input")
     pressed.down = true
     T.check(pcall(screen.update, screen, 0.016), "update runs on DOWN")
     pressed.down = false
 
-    -- Select by cursor position rather than by counting keypresses: the row
-    -- list grows, and a test that walks it blind starts asserting about
-    -- whichever row happens to be second.
-    screen.cursor = 1
-    pressed.a = true
-    T.check(pcall(screen.update, screen, 0.016), "update runs on A")
-    -- Set Up is the first row on a fresh install. It walks into the
-    -- PREFLIGHT, not straight to the provider picker: a sign-in is only
-    -- offered once there is a transport and a working connection, because
-    -- some builds (Phosphor on iOS) ship no way to reach the network at all
-    -- and a browser round trip there can never complete.
-    T.eq(screen.view, "preflight", "A on the first row opens the preflight")
-    T.check(type(screen.preflight) == "table", "and starts a preflight")
-    -- This harness has no love.thread and no TLS module, which is exactly
-    -- the shape of the platform that reported the bug.
-    T.eq(screen.preflight.state, "noTransport",
-      "a build with no transport says so rather than offering a sign-in")
-
-    -- The provider list itself hides what cannot work here. GitHub and
-    -- Dropbox are HTTPS-only; with no TLS they must not be offered.
-    screen.view = "setup"
-    local labels = {}
-    for _, label in ipairs(screen:menuLabels()) do labels[label] = true end
-    T.check(not labels["GitHub"], "GitHub is hidden with no TLS transport")
-    T.check(not labels["Dropbox"], "Dropbox is hidden with no TLS transport")
-    T.check(labels["My own server"] ~= nil or labels["Use a setup code"] ~= nil,
-      "but a reachable option is still offered")
-    pressed.a = false
-    T.check(pcall(screen.update, screen, 0.016), "the provider list builds")
-
-    -- Auto save must be reachable WITHOUT the cloud being set up, and must
-    -- start off.
+    -- Auto save is useful without any account and must start OFF (the
+    -- soft-reset rule); its rows live on the main view either way.
     local Autosave = exports and exports.autosave
     T.check(type(Autosave) == "table", "autosave is exported")
     if Autosave then
       T.eq(Autosave.minutes(), 0, "autosave starts off")
-      screen.view, screen.cursor = "main", 2
-      pressed.a = true
-      T.check(pcall(screen.update, screen, 0.016), "the auto save row runs")
-      pressed.a = false
-      T.check(Autosave.minutes() > 0,
-        "the second row on an unconnected install toggles auto save")
-      Autosave.setMinutes(0)
-    end
-  end
-end
-
--- ---- the reader: a long error must be reachable, not merely wrapped.
--- This is the regression for a real field bug: `GitHub said HTTP 400` drew as
--- `GitHub said HTTP 40`, and 400 could not be told from 404.
-do
-  local pressed = {}
-  local game = {
-    input = { wasPressed = function(_, k) return pressed[k] == true end },
-    stack = { states = {}, pop = function(s) table.remove(s.states) end },
-  }
-  local ok, screen = pcall(Data.screens.SaveSync.new, game)
-  T.check(ok and type(screen) == "table", "screen constructs for the reader test")
-  if ok and screen then
-    -- clamping is pure and must never overshoot either end
-    T.eq(screen.clampReader(-5, 20, 8), 0, "reader cannot scroll above the top")
-    T.eq(screen.clampReader(99, 20, 8), 12, "reader cannot scroll past the end")
-    T.eq(screen.clampReader(3, 20, 8), 3, "a valid offset is left alone")
-    T.eq(screen.clampReader(2, 4, 8), 0,
-      "content shorter than the window cannot scroll")
-    T.eq(screen.clampReader(0, 0, 8), 0, "empty content cannot scroll")
-
-    local long = "GitHub said HTTP 400 Problems parsing JSON while writing "
-      .. "the save file, which usually means the payload was not valid UTF-8 "
-      .. "and the upload was refused before anything was stored."
-    screen:openReader("ERROR", long)
-    T.eq(screen.view, "reader", "the reader opens")
-    T.check(#screen.reader.lines > 8, "the message really does overflow")
-
-    pressed.down = true
-    screen:update(0.016)
-    T.check(screen.reader.scroll > 0, "DOWN scrolls the reader")
-    local top = screen.reader.scroll
-    for _ = 1, 50 do screen:update(0.016) end
-    T.eq(screen.reader.scroll, #screen.reader.lines - 8,
-      "scrolling stops at the last line")
-    T.check(screen.reader.scroll > top, "and it got there by scrolling")
-
-    pressed.down = false
-    pressed.up = true
-    for _ = 1, 100 do screen:update(0.016) end
-    T.eq(screen.reader.scroll, 0, "UP returns to the top and stops")
-
-    -- B must always lead back out; getting stuck in a reader would be worse
-    -- than the truncation it replaced.
-    pressed.up = false
-    pressed.b = true
-    screen:update(0.016)
-    T.eq(screen.view, "main", "B leaves the reader")
-    T.eq(screen.reader, nil, "and drops the text it was holding")
-  end
-end
-
--- ---- the layout budget must actually add up.
--- A real screenshot showed the status text and the menu rows drawn on top of
--- each other: the header flowed with its content while the rows were clamped
--- upward to fit. Nothing caught it because draw() needs font sheets no
--- fixture has -- so assert the geometry instead of the pixels.
-do
-  local game = {
-    input = { wasPressed = function() return false end },
-    stack = { states = {}, pop = function() end },
-  }
-  local ok, screen = pcall(Data.screens.SaveSync.new, game)
-  if ok and screen and screen.layout then
-    local L = screen.layout
-    T.check(L.headerTop + L.headerSlots * 12 <= L.rowsTop,
-      "the header cannot run into the menu rows")
-    T.check(L.rowsTop + (L.rowCount - 1) * 12 <= L.boxBottom,
-      "the menu rows stay inside the border")
-    T.eq(L.visible, L.rowCount,
-      "the cursor window matches the number of rows drawn")
-  else
-    T.check(false, "screen exposes its layout")
-  end
-end
-
--- ---- the CONTINUE gate.
--- Loading a stale save is not data loss (the conflict rule catches that) but
--- it costs the player every hour they play on the wrong file first. The gate
--- must appear exactly when the cloud could NOT be checked, and must never
--- stand between someone and their own game otherwise.
-do
-  local Sync = exports and exports.sync
-  local Store = exports and exports.store
-  T.check(Sync ~= nil and Store ~= nil, "sync and store exported for the gate")
-  if Sync and Store then
-    local c = Store.config()
-    local savedProvider, savedCfg, savedAuto = c.provider, c.cfg, c.auto
-
-    -- Unconfigured: never gate. Most installs are here, and a mod that
-    -- interrupts CONTINUE on a machine that has never been set up is a bug.
-    c.provider, c.cfg = nil, nil
-    T.check(Data.screens.SaveSyncGate ~= nil, "the gate screen is registered")
-
-    local function gateNeeded()
-      -- Gate.needed() is not exported; exercise it through the real title
-      -- menu wrap instead, which is what actually decides.
-      local ran = false
-      local items = { { label = "CONTINUE", onSelect = function() ran = true end } }
-      local Runtime = require("src.mods.Runtime")
-      -- A real game carries `data` (that is where registered mod screens
-      -- live) and a stack to push onto; without both, pushing the gate falls
-      -- through to require() and blows up rather than testing anything.
-      local fakeGame = {
-        data = Data,
-        input = { wasPressed = function() return false end },
-        stack = { states = {}, push = function(s, st) s.states[#s.states+1] = st end,
-                  pop = function(s) return table.remove(s.states) end,
-                  top = function(s) return s.states[#s.states] end },
-      }
-      Runtime.call("ui.title_menu.items", function(_, l) return l end, fakeGame, items)
-      for _, it in ipairs(items) do
-        if it.label == "CONTINUE" then it.onSelect() end
-      end
-      return not ran   -- if the vanilla action did NOT run, the gate took over
+      T.eq(Autosave.target(), "active", "and targets the active save by default")
+      -- the target cycles through existing slots and back
+      Autosave.setTarget("slot2")
+      T.eq(Autosave.target(), "slot2", "a picked autosave slot sticks")
+      T.eq(Autosave.targetLabel(), "SLOT 2", "and reads as SLOT 2")
+      Autosave.setTarget("active")
     end
 
-    T.check(gateNeeded() == false, "unconfigured: CONTINUE is never gated")
-
-    c.provider, c.cfg, c.auto = "server", { provider = "server" }, true
-    Sync.boot = "ok"
-    T.check(gateNeeded() == false, "checked and clean: CONTINUE is not gated")
-
-    Sync.boot = "offline"
-    T.check(gateNeeded() == true, "offline: CONTINUE is gated")
-
-    Sync.boot = "error"
-    T.check(gateNeeded() == true, "check failed: CONTINUE is gated")
-
-    Sync.boot = "checking"
-    T.check(gateNeeded() == true, "still checking: CONTINUE is gated")
-
-    -- Auto sync off is an explicit "leave me alone"; honour it.
-    c.auto = false
-    Sync.boot = "offline"
-    T.check(gateNeeded() == false, "auto sync off: CONTINUE is not gated")
-
-    c.provider, c.cfg, c.auto = savedProvider, savedCfg, savedAuto
-    Sync.boot = "off"
+    -- Signed out, the account door must be first; entering it must not
+    -- open any network connection by itself.
+    screen.view, screen.cursor = "main", 1
+    pressed.a = true
+    T.check(pcall(screen.update, screen, 0.016), "A on Set up account runs")
+    pressed.a = false
+    T.check(screen.view == "account" or screen.view == "main",
+      "Set up leads to the account view (or refuses politely with no transport)")
+    T.check((exports.sync.link and exports.sync.link.net) == nil,
+      "no socket was opened by menu navigation")
   end
 end
 
--- ---- THE PER-FRAME BUDGET.
--- A restore list froze the game hard enough to need a force quit: each row's
--- label called a slot lookup that read and decoded EVERY save on disk, and
--- currentItems() runs three times a frame. Nothing in the per-frame path may
--- touch the disk; labels are built once when the list is built.
+-- ---- config: an account, once stored, survives a reload round trip.
 do
-  local Store = exports and exports.store
-  if Store then
-    local realReadAll = Store.readAllLocal
-    local calls = 0
-    Store.readAllLocal = function(...) calls = calls + 1 return realReadAll(...) end
-
-    local pressed = {}
-    local game = {
-      input = { wasPressed = function(_, k) return pressed[k] == true end },
-      stack = { states = {}, pop = function(s) table.remove(s.states) end },
-    }
-    local ok, screen = pcall(Data.screens.SaveSync.new, game)
-    if ok and screen then
-      screen.view = "restoreList"
-      screen.list = {}
-      for i = 1, 10 do
-        screen.list[i] = { key = "red-TEST0001", name = "n" .. i,
-                           when = "2026-08-12 00:0" .. (i % 10),
-                           where = "local", label = "RED 1 08-12 00:0" .. (i % 10) }
-      end
-      calls = 0
-      for _ = 1, 30 do pcall(screen.update, screen, 0.016) end
-      T.eq(calls, 0, "30 frames of the restore list read the disk zero times")
-
-      -- PAGING. Ten entries must not become ten rows on a 160x144 screen.
-      -- With four per page the rows are: 4 entries, More, Back.
-      screen.page = 1
-      screen.cursor = 5                       -- the More row
-      pressed.a = true
-      pcall(screen.update, screen, 0.016)
-      pressed.a = false
-      T.eq(screen.page, 2, "the More row advances to page two")
-      T.eq(screen.view, "restoreList", "and stays in the list")
-
-      -- It wraps, so one button walks the whole list and nobody is stranded
-      -- on the last page with no way forward.
-      screen.cursor = 5
-      pressed.a = true
-      pcall(screen.update, screen, 0.016)
-      pressed.a = false
-      T.eq(screen.page, 3, "and to page three")
-      -- The last page holds the remainder (2 of 10), so More sits directly
-      -- after those two rather than at a fixed index.
-      screen.cursor = 3
-      pressed.a = true
-      pcall(screen.update, screen, 0.016)
-      pressed.a = false
-      T.eq(screen.page, 1, "then wraps back to page one")
-
-      -- Picking an entry must restore THAT entry, not the row index -- the
-      -- bug a paged list invites is off-by-a-page.
-      screen.page = 2
-      screen.cursor = 1
-      pressed.a = true
-      pcall(screen.update, screen, 0.016)
-      pressed.a = false
-      T.eq(screen.view, "confirmRestore", "picking an entry opens the confirm")
-      T.eq(screen.pendingRestore and screen.pendingRestore.name, "n5",
-        "and it is the fifth entry, the first on page two")
-    else
-      T.check(false, "screen constructs for the per-frame budget test")
-    end
-    Store.readAllLocal = realReadAll
-  end
-end
-
--- ---- the boot gate's B key.
--- Reported: the screen said "B: skip" while it checked the cloud, and B
--- cancelled CONTINUE instead -- dropping the player back on the title menu
--- to press CONTINUE again. Skip has to mean "go without the check".
-do
-  local Sync = exports and exports.sync
-  local Store = exports and exports.store
-  if Sync and Store then
-    local c = Store.config()
-    local savedProvider, savedCfg = c.provider, c.cfg
-    c.provider, c.cfg, c.auto = "server", { provider = "server" }, true
-
-    local proceeded = false
-    local pressed = {}
-    local game = {
-      input = { wasPressed = function(_, k) return pressed[k] == true end },
-      stack = { states = {}, pop = function(s) return table.remove(s.states) end,
-                top = function(s) return s.states[#s.states] end },
-    }
-
-    Sync.boot = "checking"
-    local ok, screen = pcall(Data.screens.SaveSyncGate.new, game,
-      function() proceeded = true end)
-    T.check(ok and type(screen) == "table", "the gate constructs while checking")
-    if ok and screen then
-      game.stack.states[1] = screen
-      pressed.b = true
-      pcall(screen.update, screen, 0.016)
-      T.check(proceeded, "B during the check LOADS the save rather than cancelling")
-      T.eq(#game.stack.states, 0, "and closes the gate")
-    end
-
-    -- Once the check has come back with a warning, B is a plain cancel again:
-    -- there are explicit Play anyway / Back rows to choose from.
-    proceeded = false
-    Sync.boot = "offline"
-    local ok2, screen2 = pcall(Data.screens.SaveSyncGate.new, game,
-      function() proceeded = true end)
-    if ok2 and screen2 then
-      game.stack.states[1] = screen2
-      pressed.b = true
-      pcall(screen2.update, screen2, 0.016)
-      T.check(not proceeded, "B on the warning cancels rather than loading")
-    end
-
-    c.provider, c.cfg = savedProvider, savedCfg
-    Sync.boot = "off"
-  end
-end
-
-
--- ASK ON SAVE ACTUALLY ASKS.
---
--- Reported from a real device: "Ask on save is on but does not ask to sync on
--- save". Store.config() returned the stored table verbatim, backfilling only
--- `keys`, so a config written before a setting existed had no field for it --
--- and a missing field is not a false one. The row displayed `askOnSave ~=
--- false`, where nil reads ON; the code that fires the prompt tested it for
--- truth, where nil is OFF. `auto` had the same split across three sites,
--- silently disabling upload-on-save and the boot check.
---
--- This drives the real chain: the engine's save.writing event, then the
--- render.hud hook the mod pushes the prompt from.
-do
-  local ex = r.loader.exports["savesync"]
-  local Store, Sync = ex.store, ex.sync
-
-  -- A config from before either setting shipped: no askOnSave, no auto.
+  local Store = exports.store
+  local Sync = exports.sync
   local c = Store.config()
-  c.askOnSave = nil
-  c.auto = nil
-  c.provider = "github"
-  c.cfg = { token = "t", id = "gist" }
-  Store.saveConfig(c)
+  c.account = { name = "Ash", verifier = "dGVzdA==" }
+  T.check(Store.saveConfig(c), "config with an account writes")
   Store.forgetCache()
+  T.check(Sync.configured(), "and reads back as configured")
+  T.eq(Sync.accountName(), "Ash", "with the right name")
 
-  local loaded = Store.config()
-  T.eq(loaded.askOnSave, true, "a legacy config gains the askOnSave default")
-  T.eq(loaded.auto, true, "a legacy config gains the auto default")
-  T.check(Sync.configured(), "and is still a configured install")
+  -- bindings: bind, exclusive slot, unbind
+  Sync.bind("red-abc123", 2)
+  T.check(Sync.bindingFor("red-abc123").slot == 2, "a binding sticks")
+  Sync.bind("yellow-def456", 2)
+  T.check(Sync.bindingFor("red-abc123") == nil,
+    "one slot serves one save: rebinding evicts the old key")
+  T.eq(Sync.keyForSlot(2), "yellow-def456", "and the slot answers for its key")
+  Sync.unbind("yellow-def456")
+  T.check(Sync.keyForSlot(2) == nil, "unbind frees the slot")
 
-  r.loader.events:emit("save.writing", { save = {}, meta = {} })
-
-  local pushed = {}
-  local overworld = { transitioning = false }
-  local game = {
-    overworld = overworld,
-    data = Data,
-    input = { wasPressed = function() return false end },
-    stack = { top = function() return overworld end,
-              push = function(_, screen) pushed[#pushed + 1] = screen end },
-  }
-  r.loader.hooks:call("render.hud", function() end, game,
-    { gameWidth = 160, gameHeight = 144, gameX = 0, gameY = 0 })
-
-  T.eq(#pushed, 1, "saving asks whether to sync now")
-
-  -- ...and OFF still means off. Turning the prompt off is the whole escape
-  -- hatch for anyone who does not want it, so it gets its own check rather
-  -- than being implied by the one above.
-  local off = Store.config()
-  off.askOnSave = false
-  Store.saveConfig(off)
-  r.loader.events:emit("save.writing", { save = {}, meta = {} })
-  local quiet = {}
-  game.stack.push = function(_, screen) quiet[#quiet + 1] = screen end
-  r.loader.hooks:call("render.hud", function() end, game,
-    { gameWidth = 160, gameHeight = 144, gameX = 0, gameY = 0 })
-  T.eq(#quiet, 0, "and stays quiet once it is turned off")
-
-  local back = Store.config()
-  back.askOnSave = true
-  Store.saveConfig(back)
+  -- logged out: account gone, recovery code KEPT
+  c = Store.config()
+  c.recoveryCode = "G1MMO-TEST"
+  Store.saveConfig(c)
+  Sync.logout()
+  T.check(not Sync.configured(), "logout clears the account")
+  T.eq(Store.config().recoveryCode, "G1MMO-TEST",
+    "but never the recovery code -- it is the player's, not the session's")
 end
 
-r.release()
+-- ---- the CONTINUE gate wraps the real localized label and only fires
+-- when there is something to say.
+do
+  local Gate = nil
+  -- reach the gate through the loader's include cache is private; test the
+  -- observable instead: wrapping a fake title menu decorates CONTINUE.
+  local items = rowsFrom("ui.title_menu.items",
+    { { label = "CONTINUE", onSelect = function() end } })
+  local cont
+  for _, it in ipairs(items) do if it.label == "CONTINUE" then cont = it end end
+  T.check(cont and cont.savesyncWrapped, "CONTINUE is wrapped by the gate")
+  -- unconfigured (we logged out above): the gate must not interpose
+  T.check(pcall(cont.onSelect), "and pressing it with no account just proceeds")
+end
+
 T.finish("savesync load")

@@ -35,6 +35,9 @@
 
 local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
+-- engine_internals: the slot-targeted write goes through the engine's own
+-- writeSlot so it inherits the .bak discipline
+local SaveData = require("src.core.SaveData")
 
 local Autosave = {}
 
@@ -104,6 +107,47 @@ function Autosave.cycle()
     if choice == m then i = n break end
   end
   Autosave.setMinutes(Autosave.CHOICES[(i % #Autosave.CHOICES) + 1])
+end
+
+--- Where the autosave lands: "active" writes the game's own save file, as
+--- ever; a slot id writes THAT slot instead, leaving the file CONTINUE
+--- loads untouched. The picked-slot mode is what makes autosave and the
+--- soft-reset technique coexist completely: the timer's copy goes to its
+--- own slot, and the player's chosen save is never the one an ill-timed
+--- write lands on.
+function Autosave.target()
+  local t = Store.config().autosaveSlot
+  return (type(t) == "string" and t ~= "") and t or "active"
+end
+
+function Autosave.setTarget(t)
+  local c = Store.config()
+  c.autosaveSlot = (t ~= "active") and t or nil
+  Store.saveConfig(c)
+end
+
+function Autosave.targetLabel()
+  local t = Autosave.target()
+  if t == "active" then return "ACTIVE" end
+  return ("SLOT %s"):format(tostring(t):gsub("^slot", ""))
+end
+
+--- The target choices for the current game: ACTIVE plus every slot that
+--- exists. Cycles on the settings row.
+function Autosave.cycleTarget(game)
+  local version = game and game.save and game.save.version
+  local choices = { "active" }
+  local okList, slots = pcall(SaveData.listSlots, version)
+  if okList then
+    for _, slot in ipairs(slots or {}) do
+      if slot.exists then choices[#choices + 1] = slot.id end
+    end
+  end
+  local current, at = Autosave.target(), 1
+  for i, c in ipairs(choices) do
+    if c == current then at = i break end
+  end
+  Autosave.setTarget(choices[(at % #choices) + 1])
 end
 
 --- Any save resets the clock -- including the player's own.  Someone who
@@ -207,7 +251,23 @@ function Autosave.update(game)
       -- player chose. A prompt after every autosave would be the opposite of
       -- what an autosave is for.
       Autosave.writingOurselves = true
-      local wroteOk, wrote = pcall(function() return game:writeSave() end)
+      local wroteOk, wrote
+      local target = Autosave.target()
+      if target == "active" then
+        wroteOk, wrote = pcall(function() return game:writeSave() end)
+      else
+        -- Slot-targeted: capture the live state the same way writeSave
+        -- does, but land it in the picked slot via the engine's own
+        -- writeSlot (which keeps its .bak) -- the active file is untouched.
+        wroteOk, wrote = pcall(function()
+          if game.overworld and game.overworld.captureSave then
+            game.overworld:captureSave(game.save)
+          end
+          local wOk, wErr = SaveData.writeSlot(version, target, game.save)
+          return wOk ~= false, wErr
+        end)
+        if wroteOk and type(wrote) ~= "boolean" then wrote = wrote ~= false end
+      end
       Autosave.writingOurselves = false
       if not wroteOk or wrote == false then
         -- A failed write must not take the frame down, and must not spin.

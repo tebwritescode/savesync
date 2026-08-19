@@ -31,7 +31,6 @@ end
 local Json = SAVESYNC_INCLUDE("src/json.lua")
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
 local Store = SAVESYNC_INCLUDE("src/store.lua")
-local Http = SAVESYNC_INCLUDE("src/http.lua")
 local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 local Gate = SAVESYNC_INCLUDE("src/gate.lua")
@@ -43,40 +42,30 @@ local installScreen = SAVESYNC_INCLUDE("src/ui.lua")
 -- which is what hides every snapshot row and pump instead of erroring.
 Snapshot.bind(mod)
 
--- OAuth client ids.  These are PUBLIC values (the device flow and PKCE exist
--- precisely so a client needs no secret), they differ per distribution, and a
--- fork should ship its own -- so they live in a data file rather than in
--- code.  An unset id simply means that provider says "not configured" when
--- picked, instead of failing halfway through a sign-in.
-local clientIds = {}
+-- The official server: the Gen1MMO server, which carries the SaveSync
+-- service -- same host, same port, same encrypted tunnel, same accounts.
+-- The Ed25519 identity pin rides in this public source exactly like the
+-- Gen1MMO mod's: we ship both ends, so there is no certificate authority
+-- and no trust-on-first-use -- a connection that cannot prove this key is
+-- refused. Overridable from the config file for people running their own
+-- gen1mmo-server, without any UI ceremony.
+local DEFAULT_HOST = "89.125.35.98"
+local DEFAULT_PORT = 7878
+local DEFAULT_PIN  = "iekSvOIqGT14GiJ6EOoTnw8+SKv93Zw0aCdMOeF4T+A="
+
+local serverCfg
 do
-  local raw = mod:read("providers.json")
-  local parsed = raw and Json.decode(raw)
-  if type(parsed) == "table" then
-    for id, entry in pairs(parsed) do
-      if type(entry) == "table" then clientIds[id] = entry.client_id end
-    end
-  end
-  -- Overridable for development, so a contributor can test a sign-in flow
-  -- against their own OAuth app without editing a tracked file.
-  --
-  -- GUARDED, because os.getenv DOES NOT EXIST on iOS. LOVE's sandbox there
-  -- omits it, so calling it threw during mod load and took the entire mod
-  -- down before the game had even reached the title screen -- a developer
-  -- convenience costing every iOS player the whole feature. Anything reached
-  -- at load time has to survive the smallest platform the engine runs on.
-  local function env(name)
-    if type(os) ~= "table" or type(os.getenv) ~= "function" then return nil end
-    local ok, value = pcall(os.getenv, name)
-    return ok and value or nil
-  end
-  local envGithub = env("SAVESYNC_GITHUB_CLIENT_ID")
-  if envGithub and envGithub ~= "" then clientIds.github = envGithub end
-  local envDropbox = env("SAVESYNC_DROPBOX_APP_KEY")
-  if envDropbox and envDropbox ~= "" then clientIds.dropbox = envDropbox end
+  local c = Store.config()
+  serverCfg = {
+    host = c.serverHost or DEFAULT_HOST,
+    port = tonumber(c.serverPort) or DEFAULT_PORT,
+    pin = c.serverPin or DEFAULT_PIN,
+    version = ((mod:read("manifest.json") or ""):match('"version"%s*:%s*"([^"]+)"')) or "?",
+  }
+  Sync.init(serverCfg)
 end
 
-installScreen(mod, { clientIds = clientIds })
+installScreen(mod, serverCfg)
 Gate.install(mod)
 Gate.installAskSave(mod)
 
@@ -214,20 +203,18 @@ mod.events:on("game.ready", function()
   -- CONTINUE gate waits on. The title screen is also the only place a
   -- download can be applied, so this is the one sync that can actually fix a
   -- stale save rather than just report one.
-  if Sync.configured() and Store.config().auto ~= false then Sync.request(true, true) end
+  if Sync.configured() and Store.config().auto ~= false then Sync.startBoot() end
 end)
 
 -- Returning to the title after a session is the other moment a deferred
 -- download becomes applicable.
-mod.events:on("screen.popped", function()
-  if Sync.deferred and Sync.canApplyDownload() then Sync.request(true) end
-end)
+-- A deferred download lands by itself the moment the session allows it:
+-- Sync.update() checks canApplyDownload every frame, so returning to the
+-- title screen needs no extra nudge here.
 
--- NOTE ON QUITTING.  There is no "game is quitting" event a mod can listen
--- for, and LÖVE waits for every live thread before the process exits -- so
--- the network workers retire themselves after a few seconds of no work (see
--- src/http.lua) rather than relying on a shutdown call that would never
--- arrive.  Http.shutdown exists for tests and for a future quit hook.
+-- NOTE ON QUITTING.  There are no worker threads any more -- the transport
+-- is a non-blocking socket pumped on the render hook -- so nothing here can
+-- hold the process open. The link closes itself after 45s idle regardless.
 
 mod.exports = {
   sync = Sync,

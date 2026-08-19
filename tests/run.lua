@@ -1,7 +1,7 @@
 -- Pure-Lua tests for the parts of the mod that can be tested without LÖVE:
--- the codecs, the pairing-code round trip, and -- most importantly -- the
--- sync decision table, which is the one function here that can lose a
--- playthrough if it is wrong.
+-- the codecs, the platform-sandboxing rules, the backup thinning, and --
+-- most importantly -- Sync.assess, the three-hash table that keeps any
+-- replace from ever being silent.
 --
 --   luajit tests/run.lua
 --
@@ -97,71 +97,6 @@ eq("ago: never", Util.ago(nil), "never")
 eq("ago: just now", Util.ago(os.time()), "just now")
 eq("ago: hours", Util.ago(os.time() - 7200), "2 hours ago")
 
--- ------------------------------------------------------------ pairing
-
-local Pairing = SAVESYNC_INCLUDE("src/pairing.lua")
-
-local code = Pairing.encode("server",
-  { url = "https://saves.example.com", token = "sekrit", account = "Home" })
-check("pairing: has prefix", code:sub(1, 7) == "SSYNC1.")
-local decoded = assert(Pairing.decode(code))
-eq("pairing: provider", decoded.provider, "server")
-eq("pairing: url", decoded.url, "https://saves.example.com")
-eq("pairing: token", decoded.token, "sekrit")
-
-check("pairing: survives whitespace", Pairing.decode(" " .. code .. "\n ") ~= nil)
-check("pairing: survives a uri wrapper",
-  Pairing.decode("gen1recomp://savesync?c=" .. code) ~= nil)
-check("pairing: rejects junk", Pairing.decode("hello") == nil)
-check("pairing: rejects a damaged code", Pairing.decode("SSYNC1.!!!!") == nil)
-
--- A setup code must never be able to carry save data: it is built only from
--- what the provider chooses to export.
-check("pairing: no save data in the code", not code:find("sav", 1, true))
-
-local lines = Pairing.wrap(code, 19)
-check("pairing: wraps", #lines >= 1 and #lines[1] <= 19)
-eq("pairing: wrap is lossless", table.concat(lines), code)
-
--- ---------------------------------------------------------- providers
-
--- providers.json is hand-edited whenever a distribution registers its OAuth
--- apps, and a stray comma there would break sign-in for everyone with no
--- other symptom, so it is parsed here rather than trusted.
-local rawProviders = assert(io.open("mod/providers.json", "rb")):read("*a")
-local providersCfg = Json.decode(rawProviders)
-check("providers.json parses", type(providersCfg) == "table")
-if type(providersCfg) == "table" then
-  for _, id in ipairs({ "github", "dropbox" }) do
-    local entry = providersCfg[id]
-    check("providers.json has a " .. id .. " entry", type(entry) == "table")
-    check(id .. " client id is a non-empty string",
-      type(entry) == "table" and type(entry.client_id) == "string"
-        and entry.client_id ~= "",
-      "set it -- see docs/providers.md")
-  end
-end
-
-local Dropbox = SAVESYNC_INCLUDE("src/providers/dropbox.lua")
-local authUrl = Dropbox.authUrl("APPKEY", "CHALLENGE", "S256")
-
-check("dropbox: authorize url points at Dropbox",
-  authUrl:find("^https://www%.dropbox%.com/oauth2/authorize%?") ~= nil)
-check("dropbox: carries the app key", authUrl:find("client_id=APPKEY", 1, true) ~= nil)
-check("dropbox: asks for a code", authUrl:find("response_type=code", 1, true) ~= nil)
-check("dropbox: carries the PKCE challenge",
-  authUrl:find("code_challenge=CHALLENGE", 1, true) ~= nil
-    and authUrl:find("code_challenge_method=S256", 1, true) ~= nil)
--- offline is what yields a refresh token; without it the link dies after
--- four hours and every device has to be paired again
-check("dropbox: asks for offline access",
-  authUrl:find("token_access_type=offline", 1, true) ~= nil)
--- Deliberate: the app's Permissions tab is both the default and the maximum,
--- so naming scopes here could only ever over-request and fail.
-check("dropbox: sends no scope parameter",
-  authUrl:find("scope=", 1, true) == nil)
-
-
 -- ------------------------------------------------- platform sandboxing
 
 -- A REAL iOS CRASH LIVES HERE.
@@ -177,11 +112,8 @@ check("dropbox: sends no scope parameter",
 local SANDBOXED = { "os%.getenv", "os%.execute", "io%.popen", "os%.tmpname" }
 local MOD_FILES = {
   "main.lua", "src/sync.lua", "src/store.lua", "src/ui.lua", "src/gate.lua",
-  "src/snapshot.lua", "src/autosave.lua", "src/util.lua", "src/pairing.lua",
-  "src/op.lua", "src/json.lua",
-  "src/providers/init.lua", "src/providers/github.lua",
-  "src/providers/dropbox.lua", "src/providers/server.lua",
-  "src/providers/gdrive.lua",
+  "src/snapshot.lua", "src/autosave.lua", "src/util.lua", "src/json.lua",
+  "src/serverlink.lua", "src/net.lua", "src/tunnel.lua", "src/crypto.lua",
 }
 for _, file in ipairs(MOD_FILES) do
   local fh = io.open(ROOT .. file, "rb")
@@ -205,10 +137,9 @@ for _, file in ipairs(MOD_FILES) do
   end
 end
 
--- And the one environment read the mod does make must be behind that guard.
-local mainSrc = assert(io.open(ROOT .. "main.lua", "rb")):read("*a")
-check("main.lua guards its environment read",
-  mainSrc:find('type%(os%.getenv%) ~= "function"') ~= nil)
+-- v2 makes NO environment reads at all: the OAuth override the guard was
+-- built for died with the providers. The scan above still fails the build
+-- if an unguarded one ever returns.
 
 
 -- ---------------------------------------------------------- thinning
@@ -259,28 +190,28 @@ do
   eq("empty input is fine", next(Util.thin({})), nil)
 end
 
--- --------------------------------------------------- the decision table
+-- ----------------------------------------------------- the safety table
+--
+-- Sync.assess is v2's decision function, and it encodes the owner's rule
+-- verbatim: the ONLY silent flow is new local progress moving up. A server
+-- that moved -- with or without local changes -- is a QUESTION. Guessing by
+-- timestamp is exactly how naive sync eats a playthrough, so no timestamp
+-- appears anywhere in the signature.
 
 local Sync = SAVESYNC_INCLUDE("src/sync.lua")
-local D = Sync.decide
+local A = Sync.assess
 
-eq("decide: first upload",            D("a", nil, nil), "upload")
-eq("decide: new device adopts",       D(nil, "a", nil), "download")
-eq("decide: nothing anywhere",        D(nil, nil, nil), "nothing")
-eq("decide: identical",               D("a", "a", "a"), "insync")
-eq("decide: identical, never synced", D("a", "a", nil), "insync")
-eq("decide: local moved",             D("b", "a", "a"), "upload")
-eq("decide: cloud moved",             D("a", "b", "a"), "download")
-eq("decide: both moved",              D("b", "c", "a"), "conflict")
+eq("assess: all agree",                 A("a", "a", "a"), "match")
+eq("assess: agree, stale record",       A("a", "a", "z"), "match")
+eq("assess: agree, no record",          A("a", "a", nil), "match")
+eq("assess: local moved only",          A("b", "a", "a"), "upload")
+eq("assess: server moved only -> ASK",  A("a", "b", "a"), "ask_download")
+eq("assess: both moved -> ASK",         A("b", "c", "a"), "ask_both")
+eq("assess: no record, differ -> ASK",  A("b", "c", nil), "ask_both")
 
--- The case that matters most: a device that has never synced this save, and
--- both sides hold different bytes.  There is no safe automatic answer, and
--- guessing by timestamp is exactly how naive sync eats a playthrough.
-eq("decide: unknown history is a conflict", D("b", "c", nil), "conflict")
-
--- A device that is behind must not be talked into uploading by a stale
--- agreement record.
-eq("decide: stale agreement, local unchanged", D("a", "b", "a"), "download")
+-- A fresh device (no local copy) adopting a server save is a download and
+-- downloads always ask; the UI reaches that flow explicitly, so assess only
+-- ever compares real hashes. nil local means "not this function's case".
 
 -- ------------------------------------------------------------- report
 

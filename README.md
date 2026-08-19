@@ -1,130 +1,121 @@
 # SaveSync
 
 **Automatic cross-device saves for
-[Gen1Recomp](https://github.com/bryanthaboi/gen1recomp) - your save follows you
-to every device you play on, stored on free space that belongs to you.**
+[Gen1Recomp](https://github.com/bryanthaboi/gen1recomp) — five free cloud
+slots on the official server, and your save follows you to every device you
+play on.**
 
-Play on the desktop, close it, open the game on the laptop, press CONTINUE.
-Your save is there. Sign in once and it looks after itself.
+Play on the desktop, close it, open the game on the phone, press CONTINUE.
+Your save is there. One account looks after it — the same account that plays
+Gen1MMO.
 
-> Your saves live in your own storage, under your own account, and you can take
-> them with you whenever you like.
+## One account, two mods
 
-## The storage is yours
+A SaveSync account **is** a Gen1MMO account. Register in either, log into
+both. No email, no personal details: a name, a password, and a one-time
+recovery code shown once at registration.
 
-Pick one at setup. Each is free, and each keeps SaveSync to a single corner of
-your account.
+> Write the recovery code down. If you lose your password AND the code, the
+> account is gone — nobody can restore it. That is what keeps it yours.
 
-| | where your saves live |
-|---|---|
-| **GitHub** | one secret gist, reached with the `gist` permission alone |
-| **Dropbox** | one app folder of its own |
-| **Your own server** | the Docker container in `server/`, on hardware you run |
+## Five slots, your call
 
-Sign in on a second device and it finds the same storage by itself — your save
-is waiting there.
+Every account has five cloud slots. Each holds one save — any game, any
+playthrough — and the slots screen shows what lives where: game, trainer,
+badges, and how many days remain before it expires.
+
+**Saves expire after 30 days untouched.** The server keeps its space for
+active players; an expired slot says EXPIRED right where the save was, your
+account stays, and uploading again brings the slot back. Playing normally
+refreshes the clock every time you sync.
 
 ## Your progress is protected
 
-This is the part that matters most, so it is the part with the most care in it.
+This is the part that matters most, so it is the part with the most care in
+it. **Nothing replaces a save without asking you.**
 
-- **If two devices changed the same save, it stops and asks you**, showing both
-  — *"here: 3 badges"* against *"cloud (Laptop): 5 badges"* — so the choice is
-  always yours.
-- **Whichever you pick, the other survives.** Ten past versions live on the
-  device and ten in the cloud, and every replacement keeps the outgoing save
-  first.
-- **CONTINUE speaks up** when it could not reach your cloud, tells you when you
-  last synced, and lets you play anyway. Offline is a normal way to play.
-- **Save files only.** The upload set comes from reading your save slots, so
-  your saves are exactly what travels.
+- **New progress uploads by itself** after you save. That is the only silent
+  flow in the whole mod.
+- **A slot holding a different adventure refuses your upload** until you
+  confirm — Red cannot land on Gold, and your second playthrough cannot land
+  on your first, by accident.
+- **A slot another device moved shows both sides and asks** — *"here: 3
+  badges"* against *"server: 5 badges"* — so the choice is always yours.
+  The server enforces the same rule on its own, so even a modified client
+  cannot overwrite your progress unasked.
+- **Downloads always confirm**, and every replacement backs up the outgoing
+  save first — ten past versions per save live on the device.
+- **CONTINUE speaks up** when the server holds a newer save for the game you
+  are about to load, and offers it. Offline is a normal way to play.
+
+## Private on the wire
+
+Every connection runs inside an encrypted tunnel (X25519 key agreement,
+ChaCha20-Poly1305 framing) with the server's identity pinned in this public
+source — a connection that cannot prove that key is refused. Your password
+never leaves the device: a derived verifier travels once, inside the tunnel,
+and the server hardens it again before it touches disk.
+
+Because the tunnel is the mod's own, SaveSync runs on **every device the
+game runs on** — Windows, macOS, Linux, Android, iOS — with the same code.
 
 ## Snapshots, and why they are on
 
-Every five minutes SaveSync quietly takes a **snapshot** — a copy of where you
-are, kept beside your save. A crash costs you minutes instead of an evening,
-and your save file stays exactly as you left it, so soft-resetting to re-roll a
-starter or a legendary works the way it always has.
+Every five minutes SaveSync quietly takes a **snapshot** — a copy of where
+you are, kept beside your save. A crash costs you minutes instead of an
+evening, and your save file stays exactly as you left it, so soft-resetting
+to re-roll a starter or a legendary works the way it always has.
 
-There is also a plain auto-save that writes the real save file on a timer.
-That one ships off, and is yours to switch on if you want it.
+There is also a plain auto-save that writes a real save file on a timer.
+That one ships off and is yours to switch on — and it can target a **slot of
+your choosing**, so the timer's copy lives in its own slot and the save you
+manage by hand stays exactly yours.
 
 ## Install
 
-1. Have Gen1Recomp set up with your own legally-obtained ROM.
+1. Have Gen1Recomp 0.2.0+ set up with your own legally-obtained ROM.
 2. Download the latest `savesync-<version>.zip` from Releases.
 3. Launcher → MODS → **Import mod .zip**, then enable **SaveSync**.
-4. Title screen → **SAVESYNC** → Set Up → GitHub, and type the code it shows
-   you on any device with a browser. That is the whole setup.
+4. Title screen → **SAVESYNC** → Set up account → Register (or **Log in**
+   with your Gen1MMO account).
 
-On your other devices, repeat step 4 and sign in again. It finds your saves.
+On your other devices, repeat step 4 and log in. Your slots are waiting.
 
-It asks for `network` to reach your storage, `filesystem` for its own backups,
-and `engine_internals` to read and replace save slots through the engine's own
-code — so the rules about where your progress lives stay in one place.
+It asks for `network` to reach the server, `filesystem` for its own backups,
+and `engine_internals` to read and replace save slots through the engine's
+own code — so the rules about where your progress lives stay in one place.
 
 ## Status
 
 | | |
 |---|---|
-| GitHub, Dropbox and self-hosted storage | ✅ |
-| Every save slot syncs, not just the selected one | ✅ |
-| Conflict detection that stops and asks | ✅ |
-| Ten local backups and ten cloud versions per save | ✅ |
+| Five cloud slots on the official server | ✅ |
+| One account shared with Gen1MMO | ✅ |
+| Red, Blue, Yellow and Gold | ✅ |
+| Every replace is a question, both sides shown | ✅ |
+| 30-day expiry with in-game countdown, expired slots visible | ✅ |
+| Encrypted tunnel, pinned server identity | ✅ |
+| Ten local backups per save | ✅ |
 | Snapshots every 5 min, restorable, save file left alone | ✅ |
-| Stale-save warning on CONTINUE | ✅ |
+| Autosave with a slot picker | ✅ |
 | Works offline and retries later | ✅ |
-| Google Drive | 🔜 |
-
-## Where it runs
-
-Syncing needs a way out to the network, and which of those a build has depends
-on how it was compiled.
-
-| | |
-|---|---|
-| Windows, macOS, Linux | Everything works |
-| Android | Under test |
-| Steam Deck / desktop handhelds | Everything works |
-| Builds without network support | Saves stay on the device |
-
-Auto save, snapshots and Restore Previous Save work everywhere, because they
-never touch the network — a build that cannot sync is still a build that
-protects your progress locally.
-
-**The iOS Phosphor build ships without network support**, so SaveSync runs
-there in its local form. Set Up says so plainly instead of walking you into a
-sign-in that cannot finish; `Why not?` on that screen lists exactly what the
-device offers, which is what to send along if you want this looked at.
 
 ## Running your own server
 
-If you would rather your saves lived on hardware you own:
-
-```sh
-cd server
-docker compose up -d
-docker compose logs savesync    # your setup code is printed here
-```
-
-Paste that code into **SAVESYNC → Set Up → Use a setup code** on each device.
-See [server/README.md](server/README.md).
+The server is [gen1mmo-server](https://github.com/tebwritescode) — one Node
+process, zero dependencies, SQLite on disk. Run it, note the identity pin it
+prints, and point the mod at it via `savesync/config.lua` (`serverHost`,
+`serverPort`, `serverPin`). Everything the official server does, yours does.
 
 ## For developers
 
-The sync protocol, storage layout and conflict rules are written up in
-[docs/protocol.md](docs/protocol.md) — small enough to reimplement in an
-afternoon, which is deliberate. Adding a storage backend is one file against a
-four-function interface: [docs/providers.md](docs/providers.md). Tests live in
-[tests/](tests/README.md).
+The slot protocol and its refusal rules live in the server's
+`src/sync/slots.ts` and this mod's `src/serverlink.lua` — small enough to
+read in one sitting, which is deliberate. Tests live in
+[tests/](tests/README.md), including a live end-to-end that drives the
+shipped tunnel against a real server instance.
 
 ## Licence
 
-MIT. Original code and original artwork throughout; the mod ships and uploads
-save data alone.
-
-The sign-in client ids in `mod/providers.json` are public by design — the
-GitHub device flow and Dropbox PKCE exist so a desktop app needs no secret —
-but they are mine. If you fork this, register your own so your players get your
-name on the consent screen and your own rate limit.
-[docs/providers.md](docs/providers.md) walks through it.
+MIT. Original code and original artwork throughout; the mod ships and
+uploads save data alone.

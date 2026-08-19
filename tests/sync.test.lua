@@ -1,22 +1,20 @@
--- Two-device integration test for the sync engine.
+-- Two-device integration test for the v2 sync engine.
 --
 --   luajit tests/sync.test.lua
 --
--- Builds two independent "devices" -- each with its own in-memory
--- filesystem, its own copy of the mod's modules and its own config -- over
--- one shared in-memory cloud, then plays out the sequences that a real
--- player's two machines go through:
+-- Two independent "devices" -- each with its own in-memory filesystem, its
+-- own copies of the mod's modules and its own config -- over ONE fake
+-- server that implements the cloud-slot rules EXACTLY as the real one does
+-- (gen1mmo-server src/sync/slots.ts): lineage binding, baseRev optimistic
+-- concurrency, confirm-only replacement, tombstone expiry.
 --
---   * device A saves and uploads
---   * device B, which has never seen the save, adopts it
---   * A saves again, B picks the change up
---   * BOTH change the save independently -> conflict, and NOTHING is
---     overwritten until a human answers
---   * either answer preserves the losing save, on one side or the other
---   * history accumulates and prunes without losing the current save
---
--- The cloud here is a plain table, which is exactly the contract the real
--- providers implement: a flat namespace of named blobs.
+-- The stories, in the owner's words:
+--   * new progress uploads silently; EVERYTHING else asks
+--   * two saves for the same game never overwrite each other
+--   * saves for different games (red/yellow/gold) never overwrite each other
+--   * a save untouched for 30 days expires to a visible tombstone
+--   * a conflict never resolves itself; either answer keeps the loser
+--     recoverable somewhere
 
 package.path = "./mod/?.lua;" .. package.path
 
@@ -32,15 +30,95 @@ local function eq(name, got, want)
   check(name, got == want, ("got %s, want %s"):format(tostring(got), tostring(want)))
 end
 
--- ------------------------------------------------------------- the cloud
+-- ------------------------------------------------------------- the server
+--
+-- One account's five slots, with the real refusal rules. `today` is a dial
+-- so expiry is a number the test turns, not a month it waits.
 
-local cloud = { files = {} }
-local cloudCalls = { read = 0, write = 0, list = 0 }
+local function sha(s)
+  -- deterministic stand-in hash; both sides use the same one via the fake
+  -- crypto module below, so equality semantics match production exactly
+  local h1, h2 = 1, 0
+  for i = 1, #s do
+    h1 = (h1 * 31 + s:byte(i)) % 2147483647
+    h2 = (h2 + s:byte(i) * i) % 2147483647
+  end
+  return h1 .. "-" .. h2 .. "-" .. #s
+end
+
+local server = {
+  slots = {},   -- [n] = {game, playthrough, label, bytes, hash, rev, updatedDay}
+  today = 100,
+  maxSlots = 5,
+  expiryDays = 30,
+}
+
+function server.sweep()
+  for _, s in pairs(server.slots) do
+    if s.bytes and server.today - s.updatedDay > server.expiryDays then
+      s.bytes = nil
+    end
+  end
+end
+
+function server.list()
+  server.sweep()
+  local out = {}
+  for n, s in pairs(server.slots) do
+    out[#out + 1] = {
+      slot = n, game = s.game, playthrough = s.playthrough, label = s.label,
+      size = s.size, hash = s.hash, rev = s.rev,
+      expired = s.bytes == nil,
+      expiresIn = s.bytes and math.max(0, server.expiryDays - (server.today - s.updatedDay)) or 0,
+    }
+  end
+  table.sort(out, function(a, b) return a.slot < b.slot end)
+  return out
+end
+
+function server.check(slot, game, pid, baseRev, confirm)
+  if slot < 1 or slot > server.maxSlots then return nil, "bad_slot" end
+  local s = server.slots[slot]
+  if s and not confirm then
+    local have = { game = s.game, playthrough = s.playthrough, label = s.label,
+                   rev = s.rev, expired = s.bytes == nil }
+    if s.game ~= game or s.playthrough ~= pid then
+      return nil, "slot_conflict", have
+    end
+    if s.rev ~= baseRev then
+      return nil, "sync_conflict", have
+    end
+  end
+  return true
+end
+
+function server.put(slot, game, pid, label, bytes, baseRev, confirm)
+  local ok, err, have = server.check(slot, game, pid, baseRev, confirm)
+  if not ok then return nil, err, have end
+  local s = server.slots[slot]
+  local rev = (s and s.rev or 0) + 1
+  server.slots[slot] = { game = game, playthrough = pid, label = label,
+    bytes = bytes, size = #bytes, hash = sha(bytes), rev = rev,
+    updatedDay = server.today }
+  return rev
+end
+
+function server.read(slot)
+  server.sweep()
+  local s = server.slots[slot]
+  if not s or not s.bytes then return nil, "not_found" end
+  return s.bytes, { game = s.game, playthrough = s.playthrough, label = s.label,
+    rev = s.rev, hash = s.hash,
+    expiresIn = math.max(0, server.expiryDays - (server.today - s.updatedDay)) }
+end
+
+function server.clear(slot)
+  server.slots[slot] = nil
+  return true
+end
 
 -- ------------------------------------------------------------ a device
 
--- A minimal Lua table serializer, standing in for the engine's
--- SaveSerializer.  It only has to round-trip the shapes a save uses.
 local function serialize(v, out)
   out = out or {}
   local t = type(v)
@@ -66,7 +144,6 @@ end
 local function newDevice(name)
   local dev = { name = name, disk = {} }
 
-  -- ---- love.filesystem over a flat table
   dev.love = {
     filesystem = {
       getInfo = function(p)
@@ -81,12 +158,6 @@ local function newDevice(name)
       remove = function(p) dev.disk[p] = nil return true end,
       createDirectory = function() return true end,
       getDirectoryItems = function(p)
-        -- Immediate children only, same as real love.filesystem -- a leaf
-        -- file returns its own name, but a deeper path (savesync/snapshots
-        -- has a key directory below it, which has the .snap files below
-        -- THAT) has to collapse to just the next segment, or a caller that
-        -- lists the top level to discover subdirectories -- Snapshot.allLocal
-        -- does exactly this -- would always see nothing.
         local out, seen = {}, {}
         local prefix = p .. "/"
         for k in pairs(dev.disk) do
@@ -106,36 +177,37 @@ local function newDevice(name)
     timer = { getTime = function() return os.clock() end },
   }
 
-  -- ---- the engine modules the store reaches for
-  local slots = { active = nil, list = {} }
+  local slots = { active = {}, list = {} }  -- per version
+  local function versionSlots(version)
+    slots.list[version] = slots.list[version] or {}
+    return slots.list[version]
+  end
   dev.saveData = {
     saveFilename = function(version)
-      local a = slots.active
+      local a = slots.active[version]
       return a and ("saves/" .. version .. "/" .. a .. ".lua") or nil
     end,
-    activeSlot = function() return slots.active end,
+    activeSlot = function(version) return slots.active[version] end,
     listSlots = function(version)
       local out = {}
-      for _, id in ipairs(slots.list) do
+      for _, id in ipairs(versionSlots(version)) do
         out[#out + 1] = { id = id,
           exists = dev.disk["saves/" .. version .. "/" .. id .. ".lua"] ~= nil }
       end
       return out
     end,
-    createSlot = function()
-      -- Mirrors the engine: highest existing number plus one, NOT the count.
-      -- After a slot is deleted those differ, and reusing a live id would
-      -- silently overwrite somebody's save.
+    createSlot = function(version)
+      local list = versionSlots(version)
       local maxN = 0
-      for _, id in ipairs(slots.list) do
+      for _, id in ipairs(list) do
         local n = tonumber(tostring(id):match("^slot(%d+)$"))
         if n and n > maxN then maxN = n end
       end
       local id = "slot" .. (maxN + 1)
-      slots.list[#slots.list + 1] = id
+      list[#list + 1] = id
       return id
     end,
-    setActiveSlot = function(_, id) slots.active = id end,
+    setActiveSlot = function(version, id) slots.active[version] = id end,
     writeSlot = function(version, slotId, tbl)
       dev.disk["saves/" .. version .. "/" .. slotId .. ".lua"] = serialize(tbl)
       return true
@@ -155,61 +227,14 @@ local function newDevice(name)
     end,
   }
   dev.gameVersion = {
-    info = function(id) return id == "red" end,   -- one version keeps output small
+    VERSIONS = { red = {}, yellow = {}, gold = {} },
+    info = function(id)
+      return id == "red" or id == "yellow" or id == "gold"
+    end,
     get = function() return "red" end,
+    ORDER = { "red", "yellow", "gold" },
   }
 
-  -- ---- a fake mod.checkpoints, standing in for the engine's real
-  -- Checkpoint.lua.  `settled` mirrors the engine's settled-overworld gate;
-  -- flipping it is how these tests exercise a refusal without needing a
-  -- real overworld, a real map or a real animation flag to fake one.  The
-  -- identity fields default to matching what `play()` writes below, so a
-  -- device that never touches snapshots at all just carries an unused stub.
-  dev.checkpointState = { settled = true, version = "red",
-    playthroughId = "PLAY0001", badges = 0 }
-  dev.checkpoints = {
-    inspect = function(_, _game)
-      local st = dev.checkpointState
-      if not st.settled then
-        return { canCapture = false, canRestore = false,
-          message = "Close the active menu or screen before creating a checkpoint." }
-      end
-      return { canCapture = true, canRestore = true, kind = "overworld" }
-    end,
-    capture = function(_, _game)
-      local st = dev.checkpointState
-      if not st.settled then
-        return nil, "screen_busy",
-          "Close the active menu or screen before creating a checkpoint."
-      end
-      return {
-        format = 1,
-        kind = "overworld",
-        identity = { engineVersion = "test", gameVersion = st.version,
-          playthroughId = st.playthroughId },
-        save = { badges = st.badges or 0 },
-        runtime = { overworld = { map = "pallet", x = 10, y = 10,
-          facing = "down", surfing = false } },
-      }
-    end,
-    restore = function(_, _game, checkpoint)
-      local st = dev.checkpointState
-      if not st.settled then
-        return false, "screen_busy",
-          "Close the active menu or screen before creating a checkpoint."
-      end
-      if checkpoint.identity.gameVersion ~= st.version
-          or checkpoint.identity.playthroughId ~= st.playthroughId then
-        return false, "wrong_playthrough", "Checkpoint belongs to another playthrough."
-      end
-      st.badges = checkpoint.save.badges
-      dev.restoreCount = (dev.restoreCount or 0) + 1
-      return true
-    end,
-  }
-
-  -- ---- a fresh copy of the mod's modules, so each device has its own
-  -- module-level state (the config cache in particular)
   dev.cache = {}
   dev.include = function(path)
     if dev.cache[path] then return dev.cache[path] end
@@ -219,11 +244,79 @@ local function newDevice(name)
     return v
   end
 
+  -- crypto without LOVE: the deterministic hash above; base64 unused here
+  dev.cache["src/crypto.lua"] = {
+    sha256 = function(s) return s end,
+    toHex = function(s) return sha(s) end,
+    toBase64 = function(s) return s end,
+    fromBase64 = function(s) return s end,
+    verifier = function() return "VERIFIER" end,
+    randomHex = function(n) return string.rep("ab", n) end,
+  }
+
+  -- the fake link: the serverlink API surface over the fake server,
+  -- synchronous. state mirrors what sync.lua reads.
+  local FakeLink = {}
+  FakeLink.__index = FakeLink
+  FakeLink.transportAvailable = function() return true end
+  FakeLink.probe = function() return true end
+  FakeLink.new = function(opts)
+    local link = setmetatable({
+      state = "offline", slots = nil, maxSlots = server.maxSlots,
+      expiryDays = server.expiryDays, onEvent = opts.onEvent,
+    }, FakeLink)
+    dev.link = link
+    return link
+  end
+  function FakeLink:loginStored(name, verifier)
+    if dev.offline then
+      self.state = "error"
+      self.errorCode = "offline"
+      self.status = "Could not reach the server"
+      return true
+    end
+    self.state = "ready"
+    self.name = name
+    self.slots = server.list()
+    return true
+  end
+  function FakeLink:register(name, password)
+    self.state = "ready"
+    self.name = name
+    self.slots = server.list()
+    if self.onEvent then
+      self.onEvent("credentials", { name = name, verifier = "VERIFIER" })
+      self.onEvent("recovery_code", "G1MMO-FAKE-CODE")
+    end
+    self.recoveryCode = "G1MMO-FAKE-CODE"
+    return true
+  end
+  FakeLink.login = FakeLink.register
+  function FakeLink:ready() return self.state == "ready" end
+  function FakeLink:disconnect() self.state = "offline" end
+  function FakeLink:update() end
+  function FakeLink:list(cb)
+    self.slots = server.list()
+    cb(self.slots)
+  end
+  function FakeLink:download(slot, cb)
+    local bytes, meta = server.read(slot)
+    if bytes then cb(bytes, nil, meta) else cb(nil, meta or "not_found") end
+  end
+  function FakeLink:upload(slot, meta, bytes, baseRev, confirm, cb)
+    local rev, err, have = server.put(slot, meta.game, meta.playthrough,
+      meta.label, bytes, baseRev, confirm)
+    if rev then cb(rev, nil, { expiresIn = server.expiryDays })
+    else cb(nil, err, have) end
+  end
+  function FakeLink:clear(slot, cb)
+    cb(server.clear(slot))
+  end
+  dev.cache["src/serverlink.lua"] = FakeLink
+
   return dev
 end
 
--- Point the globals at one device.  Modules are loaded lazily on first
--- activate, so each device binds to its own stubs.
 local function activate(dev)
   _G.love = dev.love
   _G.SAVESYNC_INCLUDE = dev.include
@@ -231,888 +324,244 @@ local function activate(dev)
   package.loaded["src.core.SaveSerializer"] = dev.serializer
   package.loaded["src.core.GameVersion"] = dev.gameVersion
   if not dev.Sync then
-    dev.Op = dev.include("src/op.lua")
     dev.Store = dev.include("src/store.lua")
-    dev.Snapshot = dev.include("src/snapshot.lua")
-    dev.Snapshot.bind({ checkpoints = dev.checkpoints })
     dev.Sync = dev.include("src/sync.lua")
-    dev.Providers = dev.include("src/providers/init.lua")
-    -- Register the fake cloud as a provider on THIS device's registry.
-    local Op = dev.Op
-    dev.Providers.get = function(id)
-      if id ~= "fake" then return nil end
-      return {
-        id = "fake",
-        describe = function() return "Fake cloud" end,
-        exportable = function(cfg) return { provider = "fake", token = cfg.token } end,
-        list = function()
-          return Op.new(function()
-            cloudCalls.list = cloudCalls.list + 1
-            local out = {}
-            for k, v in pairs(cloud.files) do out[k] = #v end
-            return out
-          end)
-        end,
-        read = function(_, names)
-          return Op.new(function()
-            cloudCalls.read = cloudCalls.read + 1
-            local out = {}
-            for _, n in ipairs(names) do out[n] = cloud.files[n] end
-            return out
-          end)
-        end,
-        write = function(_, files)
-          return Op.new(function()
-            cloudCalls.write = cloudCalls.write + 1
-            for n, c in pairs(files) do
-              if c == false then cloud.files[n] = nil else cloud.files[n] = c end
-            end
-            return true
-          end)
-        end,
-      }
-    end
-    local c = dev.Store.config()
-    c.provider, c.cfg = "fake", { provider = "fake", token = "t" }
-    c.deviceName = dev.name
-    dev.Store.saveConfig(c)
-  end
-  return dev
-end
-
--- Write a save to the device's disk the way the game would.
-local function play(dev, tbl)
-  activate(dev)
-  local slot = dev.saveData.activeSlot()
-  if not slot then
-    slot = dev.saveData.createSlot("red")
-    dev.saveData.setActiveSlot("red", slot)
-  end
-  dev.saveData.writeSlot("red", slot, tbl)
-end
-
--- Run one full sync cycle to completion.
-local function sync(dev)
-  activate(dev)
-  dev.Sync.request(true)
-  for _ = 1, 200 do
+    dev.Sync.init({ host = "test", port = 1, pin = "PIN", version = "2.0.0" })
+    -- sign in (the fake link answers instantly)
+    dev.Sync.login("Ash", "pw")
     dev.Sync.update()
-    if not dev.Sync.busy() then break end
   end
-  return dev.Sync.state, dev.Sync.status
+  return dev.Sync, dev.Store
 end
 
-local function localSave(dev)
+local function play(dev, version, slotId, tbl)
   activate(dev)
-  local rec = dev.Store.readLocal("red")
+  local list = dev.slots.list[version] or {}
+  local found = false
+  for _, id in ipairs(list) do if id == slotId then found = true end end
+  if not found then
+    dev.slots.list[version] = dev.slots.list[version] or {}
+    table.insert(dev.slots.list[version], slotId)
+  end
+  dev.slots.active[version] = dev.slots.active[version] or slotId
+  dev.saveData.writeSlot(version, slotId, tbl)
+end
+
+local function pump(dev, frames)
+  activate(dev)
+  for _ = 1, frames or 300 do dev.Sync.update() end
+end
+
+local function localSave(dev, version, slotId)
+  activate(dev)
+  local rec = dev.Store.readSlot(version, slotId)
   return rec and rec.save or nil
-end
-
--- Cloud payloads are base64 on the wire (see the blob-encoding note in
--- sync.lua), so every assertion about what the cloud HOLDS has to decode
--- first. Going through Sync.decodeBlob rather than a local base64 copy means
--- these checks also prove the shipping decoder is the inverse of the encoder.
-local function cloudSave(dev, name)
-  activate(dev)
-  return dev.Sync.decodeBlob(cloud.files[name]) or ""
-end
-
-local function cloudKeys()
-  local out = {}
-  for k in pairs(cloud.files) do out[#out + 1] = k end
-  table.sort(out)
-  return out
 end
 
 -- ------------------------------------------------------------ the story
 
-local A = newDevice("Device A")
-local B = newDevice("Device B")
+local A = newDevice("A")
+local B = newDevice("B")
 
--- 1. A plays and syncs.  Nothing in the cloud yet, so this is an upload.
-play(A, { version = "red", player = { name = "RED" }, badges = 1,
-          meta = { playthroughId = "PLAY0001", savedAt = 100 } })
-local st = sync(A)
-eq("A syncs cleanly", st, "idle")
-check("cloud has the save", cloud.files["red-PLAY0001.sav"] ~= nil,
-  table.concat(cloudKeys(), ", "))
-check("cloud has a manifest", cloud.files["red-PLAY0001.json"] ~= nil)
--- History names carry a timestamp now ("...h0001-20260812-000913.sav"), so
--- match the shape rather than a literal name.
-local function isHistory(name)
-  return name:match("^red%-PLAY0001%.h%d+[%d%-]*%.sav$") ~= nil
-end
-local haveHistory = false
-for name in pairs(cloud.files) do
-  if isHistory(name) then haveHistory = true end
-end
-check("cloud has a history entry", haveHistory)
-
--- Only save-shaped names, ever.  This is the "never upload ROMs" guarantee
--- expressed as a test: the engine builds its upload set from save slots, so
--- there is no name in the cloud that did not come from one.
-for _, k in ipairs(cloudKeys()) do
-  check("cloud name is save-shaped: " .. k,
-    k:match("^red%-PLAY0001%.[hjs]") ~= nil)
+-- 1. A signs in and sends its Red save to cloud slot 1, by choice.
+play(A, "red", "slot1", { version = "red", player = { name = "RED" }, badges = 1,
+  meta = { playthroughId = "aaaa0001" } })
+do
+  local Sync = activate(A)
+  eq("A is configured after login", Sync.configured(), true)
+  local done, okPush
+  Sync.push("red-aaaa0001", 1, false, function(ok) done, okPush = true, ok end)
+  pump(A, 10)
+  check("the push completed", done)
+  eq("and succeeded", okPush, true)
+  check("the server holds it", server.slots[1] ~= nil)
+  eq("bound at rev 1", Sync.bindingFor("red-aaaa0001") and Sync.bindingFor("red-aaaa0001").rev, 1)
 end
 
--- 2. B has never seen this playthrough.  Nothing local to lose -> adopt.
-eq("B syncs cleanly", sync(B), "idle")
-local bSave = localSave(B)
-check("B now has the save", bSave ~= nil)
-eq("B got the right save", bSave and bSave.player.name, "RED")
-eq("B got the badge count", bSave and bSave.badges, 1)
-
--- 3. A plays on.  B picks the change up on its next sync.
-play(A, { version = "red", player = { name = "RED" }, badges = 2,
-          meta = { playthroughId = "PLAY0001", savedAt = 200 } })
-eq("A uploads the update", sync(A), "idle")
-eq("B downloads the update", sync(B), "idle")
-eq("B is up to date", localSave(B).badges, 2)
-
--- 4. THE CASE THAT MATTERS.  Both devices change the same save without
--- syncing in between.  Neither may be overwritten.
-play(A, { version = "red", player = { name = "RED" }, badges = 3,
-          meta = { playthroughId = "PLAY0001", savedAt = 300 } })
-play(B, { version = "red", player = { name = "RED" }, badges = 5,
-          meta = { playthroughId = "PLAY0001", savedAt = 310 } })
-
-eq("A publishes first", sync(A), "idle")
-eq("B refuses to guess", sync(B), "conflict")
-eq("B kept its own save untouched", localSave(B).badges, 5)
-eq("A's save is still A's", localSave(A).badges, 3)
-check("the cloud still holds A's version",
-  cloudSave(A, "red-PLAY0001.sav"):find("3", 1, true) ~= nil)
-
--- B refuses again rather than drifting into a decision on a later cycle.
-eq("B stays in conflict", sync(B), "conflict")
-eq("B still has its save", localSave(B).badges, 5)
-
--- 5. The player answers: keep this device (B).  A's version is not lost --
--- it is in cloud history, where A put it.
-activate(B)
-B.Sync.runForeground(B.Sync.resolveKeepLocal("red-PLAY0001"),
-  "Uploading...", "Kept this device")
-for _ = 1, 200 do
-  B.Sync.update()
-  if not B.Sync.busy() then break end
+-- 2. B adopts it -- explicitly, because downloads always ask; the "ask"
+-- here is the test calling pull, exactly as the UI does after its confirm.
+do
+  local Sync, Store = activate(B)
+  local done, okPull
+  Sync.pull(1, nil, function(ok) done, okPull = true, ok end)
+  pump(B, 10)
+  check("the pull completed", done)
+  eq("and succeeded", okPull, true)
+  local save = localSave(B, "red", "slot1")
+  check("B now has the save", save ~= nil)
+  eq("with the right trainer", save and save.player.name, "RED")
+  eq("B's binding matches the server rev",
+    Sync.bindingFor("red-aaaa0001") and Sync.bindingFor("red-aaaa0001").rev, 1)
 end
-eq("B resolved", B.Sync.state, "idle")
-check("cloud now holds B's version",
-  cloudSave(A, "red-PLAY0001.sav"):find("5", 1, true) ~= nil)
 
-local historyHasA = false
-for name, body in pairs(cloud.files) do
-  if isHistory(name)
-      and (A.Sync.decodeBlob(body) or ""):find('"badges"%]=3') then
-    historyHasA = true
+-- 3. A plays on and SAVES: the one silent flow. markSaved + update pushes
+-- with no question asked.
+play(A, "red", "slot1", { version = "red", player = { name = "RED" }, badges = 2,
+  meta = { playthroughId = "aaaa0001" } })
+do
+  local Sync = activate(A)
+  Sync.markSaved()
+  -- the settle delay is wall-clock; force it due
+  Sync.request()
+  pump(A, 20)
+  eq("A's new progress fast-forwarded up, silently", server.slots[1].rev, 2)
+  eq("no question was raised", Sync.question, nil)
+end
+
+-- 4. B boots: the server has news. That is a QUESTION (the gate shows it);
+-- nothing lands by itself.
+do
+  local Sync = activate(B)
+  Sync.startBoot()
+  pump(B, 10)
+  eq("boot sees the server is ahead", Sync.boot, "behind")
+  local save = localSave(B, "red", "slot1")
+  eq("and B's save is UNTOUCHED", save.badges, 1)
+  -- the player answers (via the gate's Use server save)
+  local key = next(Sync.bootNews)
+  eq("the news names the right save", key, "red-aaaa0001")
+  Sync.pull(Sync.bootNews[key], key, function() end)
+  pump(B, 10)
+  eq("after the player's yes, B has the progress", localSave(B, "red", "slot1").badges, 2)
+  eq("and the boot verdict clears", Sync.boot, "ok")
+end
+
+-- 5. THE CASE THAT MATTERS: both change the same save without syncing.
+play(A, "red", "slot1", { version = "red", player = { name = "RED" }, badges = 3,
+  meta = { playthroughId = "aaaa0001" } })
+play(B, "red", "slot1", { version = "red", player = { name = "RED" }, badges = 5,
+  meta = { playthroughId = "aaaa0001" } })
+do
+  local SyncA = activate(A)
+  SyncA.push("red-aaaa0001", 1, false, function() end)
+  pump(A, 10)
+  eq("A publishes first", server.slots[1].rev, 3)
+
+  local SyncB = activate(B)
+  SyncB.push("red-aaaa0001", 1, false, function() end)
+  pump(B, 10)
+  check("B's push was refused into a question", SyncB.question ~= nil)
+  eq("of the both-moved kind", SyncB.question and SyncB.question.kind, "both_moved")
+  eq("the server copy STANDS (badges 3 upload)", server.slots[1].rev, 3)
+  eq("B's local copy stands too", localSave(B, "red", "slot1").badges, 5)
+
+  -- the player picks the server's copy; B's own is backed up first
+  SyncB.answer("take_server")
+  pump(B, 10)
+  eq("B adopted the server copy", localSave(B, "red", "slot1").badges, 3)
+  local hasBackup = false
+  for k in pairs(B.disk) do
+    if k:match("^savesync/backups/red%-aaaa0001/") then hasBackup = true end
   end
-end
-check("A's overwritten save survives in cloud history", historyHasA,
-  table.concat(cloudKeys(), ", "))
-
--- 6. A comes back.  It is behind now, and behind-with-no-local-change is a
--- plain download.
-eq("A catches up", sync(A), "idle")
-eq("A took B's version", localSave(A).badges, 5)
-
--- The displaced save on A was backed up before it was replaced.
-activate(A)
-local backups = A.Store.listBackups("red-PLAY0001")
-check("A backed up what it replaced", #backups > 0)
-
--- 7. History prunes but never touches the current save.
-for badges = 6, 20 do
-  play(A, { version = "red", player = { name = "RED" }, badges = badges,
-            meta = { playthroughId = "PLAY0001", savedAt = 400 + badges } })
-  sync(A)
-end
-local hist = 0
-for name in pairs(cloud.files) do
-  if isHistory(name) then hist = hist + 1 end
-end
-check("history is bounded", hist <= 10, "kept " .. hist)
-check("current save is still there", cloud.files["red-PLAY0001.sav"] ~= nil)
-check("current save is the latest",
-  cloudSave(A, "red-PLAY0001.sav"):find('"badges"%]=20') ~= nil)
-eq("and it round-trips to A", localSave(A).badges, 20)
-
--- 8. Local backups are bounded too, and the newest is first.
-activate(A)
-local finalBackups = A.Store.listBackups("red-PLAY0001")
-check("local backups are bounded", #finalBackups <= 10, "kept " .. #finalBackups)
-if #finalBackups > 1 then
-  check("newest backup first", finalBackups[1].name > finalBackups[2].name)
+  check("B's overwritten save is in local backups", hasBackup)
 end
 
--- 9. MULTIPLE SAVE FILES.
---
--- Slots are independent playthroughs. Two things must hold: all of them sync
--- (not just whichever is selected), and a save arriving from the cloud lands
--- in the slot that holds ITS playthrough -- never in whichever slot happens
--- to be active, which would destroy an unrelated game.
-
-local function playIn(dev, slotId, tbl)
-  activate(dev)
-  local known = false
-  for _, id in ipairs(dev.slots.list) do
-    if id == slotId then known = true end
-  end
-  if not known then dev.slots.list[#dev.slots.list + 1] = slotId end
-  dev.saveData.writeSlot("red", slotId, tbl)
+-- 6. The same conflict answered the OTHER way: keep local, replace server.
+play(A, "red", "slot1", { version = "red", player = { name = "RED" }, badges = 6,
+  meta = { playthroughId = "aaaa0001" } })
+play(B, "red", "slot1", { version = "red", player = { name = "RED" }, badges = 7,
+  meta = { playthroughId = "aaaa0001" } })
+do
+  local SyncA = activate(A)
+  SyncA.push("red-aaaa0001", 1, false, function() end)
+  pump(A, 10)
+  local SyncB = activate(B)
+  SyncB.push("red-aaaa0001", 1, false, function() end)
+  pump(B, 10)
+  check("again a question", SyncB.question ~= nil)
+  SyncB.answer("keep_local")
+  pump(B, 10)
+  check("the player's confirm replaced the server copy", server.slots[1].rev > 4)
+  check("with B's bytes", server.slots[1].bytes:find('"badges"%]=7') ~= nil)
+  eq("A still holds its own copy locally", localSave(A, "red", "slot1").badges, 6)
 end
 
-local C = newDevice("Device C")
-playIn(C, "slot1", { version = "red", player = { name = "ASH" }, badges = 4,
-  meta = { playthroughId = "PLAYAAAA", savedAt = 900 } })
-playIn(C, "slot2", { version = "red", player = { name = "GARY" }, badges = 6,
-  meta = { playthroughId = "PLAYBBBB", savedAt = 910 } })
-activate(C)
-C.slots.active = "slot1"
-
-eq("C syncs both files", sync(C), "idle")
-check("first playthrough reached the cloud",
-  cloud.files["red-PLAYAAAA.sav"] ~= nil, table.concat(cloudKeys(), ", "))
-check("second playthrough reached the cloud",
-  cloud.files["red-PLAYBBBB.sav"] ~= nil, table.concat(cloudKeys(), ", "))
-
--- A fresh device takes both down, into two separate slots.
-local D2 = newDevice("Device D")
-eq("D syncs cleanly", sync(D2), "idle")
-activate(D2)
-local dSlots = {}
-for _, s in ipairs(D2.saveData.listSlots("red")) do
-  local rec = D2.Store.readSlot("red", s.id)
-  if rec then dSlots[rec.key] = rec.save.badges end
-end
-eq("D adopted the first playthrough", dSlots["red-PLAYAAAA"], 4)
-eq("D adopted the second playthrough", dSlots["red-PLAYBBBB"], 6)
-
--- The invariant that matters is ONE SLOT PER PLAYTHROUGH -- not a fixed
--- count, since this shared cloud also still holds the playthrough from the
--- conflict scenario above, and adopting that one too is correct.
-local function slotsAndKeys(dev)
-  activate(dev)
-  local slots = dev.saveData.listSlots("red")
-  local keys = {}
-  local n = 0
-  for _, s in ipairs(slots) do
-    local rec = dev.Store.readSlot("red", s.id)
-    if rec and not keys[rec.key] then keys[rec.key] = true n = n + 1 end
-  end
-  return #slots, n
+-- 7. TWO SAVES, SAME GAME: a second Red playthrough cannot land on the
+-- first's slot without the player.
+play(A, "red", "slot2", { version = "red", player = { name = "ASH2" }, badges = 0,
+  meta = { playthroughId = "bbbb0002" } })
+do
+  local Sync = activate(A)
+  local err
+  Sync.push("red-bbbb0002", 1, false, function(_, e) err = e end)
+  pump(A, 10)
+  eq("the slot refuses a different playthrough", err, "slot_conflict")
+  check("and raises the question", Sync.question ~= nil and Sync.question.kind == "slot_conflict")
+  Sync.answer("later")
+  check("the first playthrough's bytes are untouched",
+    server.slots[1].bytes:find('"badges"%]=7') ~= nil)
+  -- into its own slot instead: clean
+  local ok2
+  Sync.push("red-bbbb0002", 2, false, function(ok) ok2 = ok end)
+  pump(A, 10)
+  eq("its own slot takes it without a question", ok2, true)
 end
 
-local dSlotCount, dKeyCount = slotsAndKeys(D2)
-eq("D made one slot per playthrough, no duplicates", dSlotCount, dKeyCount)
-check("D adopted every cloud playthrough", dKeyCount >= 3, "keys=" .. dKeyCount)
+-- 8. DIFFERENT GAMES: gold and red isolate by construction.
+play(A, "gold", "slot1", { version = "gold", player = { name = "GOLD" }, badges = 2,
+  meta = { playthroughId = "cccc0003" } })
+do
+  local Sync = activate(A)
+  local err
+  Sync.push("gold-cccc0003", 1, false, function(_, e) err = e end)
+  pump(A, 10)
+  eq("gold into the red slot is refused", err, "slot_conflict")
+  Sync.answer("later")
+  local ok3
+  Sync.push("gold-cccc0003", 3, false, function(ok) ok3 = ok end)
+  pump(A, 10)
+  eq("gold into its own slot lands", ok3, true)
+  eq("three slots, three lineages", server.slots[3].game, "gold")
 
--- THE OVERWRITE TEST. Device C is sitting on slot1 (PLAYAAAA). Device D
--- advances the OTHER playthrough and publishes it. C must put that update in
--- slot2 and leave the slot it is looking at completely alone.
-local before = nil
-activate(C)
-before = C.Store.readSlot("red", "slot1").bytes
-
--- activate FIRST: the modules are per-device but the love global is not, so
--- reading D's store while C is active would read C's disk through D's code.
-activate(D2)
-local dSlotForB
-for _, s in ipairs(D2.saveData.listSlots("red")) do
-  local rec = D2.Store.readSlot("red", s.id)
-  if rec and rec.key == "red-PLAYBBBB" then dSlotForB = s.id end
-end
-check("found D's slot for the second playthrough", dSlotForB ~= nil)
-playIn(D2, dSlotForB, { version = "red", player = { name = "GARY" }, badges = 8,
-  meta = { playthroughId = "PLAYBBBB", savedAt = 920 } })
-eq("D publishes the second playthrough", sync(D2), "idle")
-
-activate(C)
-C.slots.active = "slot1"
-eq("C takes the update", sync(C), "idle")
-eq("C updated the right slot", C.Store.readSlot("red", "slot2").save.badges, 8)
-eq("C left the selected slot untouched",
-  C.Store.readSlot("red", "slot1").bytes, before)
-local cSlotCount, cKeyCount = slotsAndKeys(C)
-eq("C still holds one slot per playthrough", cSlotCount, cKeyCount)
-
--- 10. Uploading also leaves a local copy, so a single-device player has
--- something in Restore Previous Save without ever having been overwritten.
-activate(C)
-check("an upload leaves a local backup",
-  #C.Store.listBackups("red-PLAYAAAA") > 0)
-
--- 11. AUTOSAVE.
---
--- The gate is the whole feature. An autosave that fires during a battle, a
--- cutscene or a warp writes a state the player did not choose, and in Gen 1
--- an autosave that fires at all when they meant to soft-reset destroys a
--- legitimate technique. So: off by default, and every refusal tested.
-
-activate(A)
-local Autosave = A.include("src/autosave.lua")
-
-eq("autosave is off by default", Autosave.minutes(), 0)
-eq("autosave label reads OFF", Autosave.label(), "OFF")
-
--- A fake game whose stack top and flags we can move around.
-local overworld = { player = { moving = false } }
-local fakeGame = {
-  overworld = overworld,
-  save = { version = "red" },
-  stack = { states = { overworld }, top = function(s) return s.states[#s.states] end },
-  writeSave = function() return true end,
-}
-
-check("safe when settled in the overworld", Autosave.safe(fakeGame) == true)
-
--- A menu, a battle, a shop -- anything pushed above the overworld.
-table.insert(fakeGame.stack.states, { screenId = "SomeMenu" })
-check("not safe with a menu open", Autosave.safe(fakeGame) == false)
-table.remove(fakeGame.stack.states)
-
-overworld.transitioning = true
-check("not safe mid-warp", Autosave.safe(fakeGame) == false)
-overworld.transitioning = nil
-
-overworld.runner = { isRunning = function() return true end }
-check("not safe during a script", Autosave.safe(fakeGame) == false)
-overworld.runner = nil
-
-overworld.player.moving = true
-check("not safe mid-step", Autosave.safe(fakeGame) == false)
-overworld.player.moving = false
-
-check("safe again once settled", Autosave.safe(fakeGame) == true)
-
--- The engine's own gate wins when it is present.  Everything above exercised
--- the fallback (there is no src.render.Zoom in a pure-Lua test), so this
--- proves the real predicate is the one consulted in a real build.
-package.loaded["src.render.Zoom"] = {
-  gateOK = function() return false end,
-}
-check("the engine gate is consulted when available",
-  Autosave.safe(fakeGame) == false)
-package.loaded["src.render.Zoom"] = nil
-
--- Off means off: no write, however long has passed.
-local wrote = 0
-fakeGame.writeSave = function() wrote = wrote + 1 return true end
-Autosave.setMinutes(0)
-Autosave.noteSaved()
-for _ = 1, 5 do Autosave.update(fakeGame) end
-eq("off never writes", wrote, 0)
-
--- Now the part that matters: that update() actually OBEYS the gate. Testing
--- safe() alone would pass even if update() never called it, so drive the
--- clock forward and watch what update() does with it.
-local fakeNow = 100000
-_G.love.timer.getTime = function() return fakeNow end
-
-wrote = 0
-Autosave.setMinutes(3)
-Autosave.update(fakeGame)
-eq("no write before the interval is up", wrote, 0)
-
-fakeNow = fakeNow + 200          -- 3 min 20 s later: due
-overworld.player.moving = true   -- ...but the player is mid-step
-Autosave.update(fakeGame)
-eq("a due save waits while unsafe", wrote, 0)
-
-table.insert(fakeGame.stack.states, { screenId = "Battle" })
-Autosave.update(fakeGame)
-eq("a due save waits through a battle", wrote, 0)
-table.remove(fakeGame.stack.states)
-
-overworld.player.moving = false  -- settled at last
-Autosave.update(fakeGame)
-eq("the deferred save lands as soon as it is safe", wrote, 1)
-
-Autosave.update(fakeGame)
-eq("and does not immediately write again", wrote, 1)
-
-fakeNow = fakeNow + 200
-Autosave.update(fakeGame)
-eq("writes again after another interval", wrote, 2)
-
--- A veto (the save.write hook, an ephemeral tool session) is an answer, not
--- an error: back off instead of retrying every frame.
-fakeGame.writeSave = function() wrote = wrote + 1 return false end
-fakeNow = fakeNow + 200
-Autosave.update(fakeGame)
-local afterVeto = wrote
-for _ = 1, 20 do Autosave.update(fakeGame) end
-eq("a veto backs off instead of spinning", wrote, afterVeto)
-
-fakeGame.writeSave = function() wrote = wrote + 1 return true end
-Autosave.setMinutes(0)
-
--- The cycle walks the offered choices and comes back to off.
-local seen = {}
-for _ = 1, #Autosave.CHOICES do
-  Autosave.cycle()
-  seen[#seen + 1] = Autosave.minutes()
-end
-eq("cycling returns to off", seen[#seen], 0)
-check("cycling offers a real interval", seen[1] > 0)
-
--- ------------------------------------------------------------ snapshots
---
--- Snapshots stand in for the engine's mod.checkpoints, faked per device
--- above (dev.checkpoints / dev.checkpointState).  They are append-only --
--- see the comment atop sync.lua -- so what needs testing here is different
--- from the save story: that the timer only fires when the engine allows it,
--- that the two auto timers default to opposite states for opposite reasons,
--- that a snapshot's cloud name survives the self-hosted server's own name
--- rule, that snapshots propagate device to device, that pruning caps at
--- ten on both sides, and that restoring one is itself undoable.
-
--- 12. A SNAPSHOT IS TAKEN WHEN DUE, AND NOT WHEN THE ENGINE REFUSES.
-local E = newDevice("Device E")
-activate(E)
-
-local okName, okKey = E.Snapshot.take(nil, "manual")
-check("a snapshot is taken when the engine allows it", okName ~= nil, okKey)
-eq("its key is version + playthrough, same shape saves use", okKey, "red-PLAY0001")
-
-E.checkpointState.settled = false
-local refusedName, refusedMsg = E.Snapshot.take(nil, "manual")
-check("no snapshot when the engine refuses", refusedName == nil)
-eq("the engine's own refusal message passes through verbatim", refusedMsg,
-  "Close the active menu or screen before creating a checkpoint.")
-E.checkpointState.settled = true
-
--- 13. THE TWO AUTO TIMERS, AND THE TIMER-LEVEL REFUSAL/DEFERRAL.
-local Autosave2 = E.include("src/autosave.lua")
-eq("auto snapshot defaults to 5", Autosave2.snapshotMinutes(), 5)
-eq("auto snapshot label reads 5 min", Autosave2.snapshotLabel(), "5 min")
-eq("auto save-file still defaults to 0", Autosave2.minutes(), 0)
-eq("auto save-file label still reads OFF", Autosave2.label(), "OFF")
-
-local fakeSnapNow = 500000
-_G.love.timer.getTime = function() return fakeSnapNow end
-Autosave2.setSnapshotMinutes(5)   -- lastSnapshotAt = fakeSnapNow, from here
-
-local key13 = "red-PLAY0001"
-local before13 = #E.Snapshot.list(key13)
-Autosave2.update({})
-eq("no snapshot before the interval is up", #E.Snapshot.list(key13), before13)
-
-fakeSnapNow = fakeSnapNow + 301        -- 5 min 1 s later: due
-E.checkpointState.settled = false
-Autosave2.update({})
-eq("a due snapshot waits while the engine refuses",
-  #E.Snapshot.list(key13), before13)
-
-E.checkpointState.settled = true
-Autosave2.update({})
-eq("the deferred snapshot lands once the engine allows it",
-  #E.Snapshot.list(key13), before13 + 1)
-
-Autosave2.update({})
-eq("and does not immediately fire again", #E.Snapshot.list(key13), before13 + 1)
-
--- A capture failure (not just "not settled yet") is a veto too, and backs
--- off instead of retrying every frame -- same reasoning as the save-file
--- veto in section 11, exercised here for the second timer.
-local realCapture = E.checkpoints.capture
-E.checkpoints.capture = function() return nil, "capture_failed", "boom" end
-fakeSnapNow = fakeSnapNow + 301
-Autosave2.update({})
-local afterFirstFail = #E.Snapshot.list(key13)
-eq("a capture failure writes nothing", afterFirstFail, before13 + 1)
-for _ = 1, 20 do Autosave2.update({}) end
-eq("and backs off instead of spinning", #E.Snapshot.list(key13), afterFirstFail)
-E.checkpoints.capture = realCapture
-
--- 14 & 15. CLOUD NAMES, AND PROPAGATION DEVICE A -> CLOUD -> DEVICE B.
---
--- No conflict handling needed for any of this -- see the comment atop
--- sync.lua -- so this checks that the files actually MOVE: what E holds
--- locally reaches the cloud under a name the self-hosted server's own
--- validator accepts, and a device that has never seen them adopts every one.
-
--- Mirrors server/server.js's NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
--- plus its explicit rejection of "..".  Re-implemented here, not imported,
--- so a mismatch on EITHER side of the wire fails this test, not just a typo
--- both sides happen to share.
-local function validCloudName(name)
-  if type(name) ~= "string" or name == "" or #name > 128 then return false end
-  if not name:match("^%w") then return false end
-  if name:find("%.%.", 1, true) then return false end
-  return name:match("^[%w][%w%._%-]*$") == name
+  -- and a download of the gold slot lands in gold's save dir on B
+  local SyncB = activate(B)
+  SyncB.pull(3, nil, function() end)
+  pump(B, 10)
+  local gsave = localSave(B, "gold", "slot1")
+  check("gold landed under gold on B", gsave ~= nil and gsave.version == "gold")
+  check("and did not touch B's red save",
+    localSave(B, "red", "slot1") ~= nil)
 end
 
--- The precise shape sync.lua's snapCloudName/parseSnapName agree on for
--- key13, not just "starts with the key plus .s" -- the shared cloud already
--- holds "red-PLAY0001.sav" from the save story earlier in this file, and
--- that name starts with "red-PLAY0001.s" too.
-local function isKey13Snapshot(name)
-  return name:match("^red%-PLAY0001%.s%d+%-%d+%-%x+%.snap$") ~= nil
+-- 9. EXPIRY: 31 days pass; the red slot's bytes are swept, the tombstone
+-- shows, the boot check does not cry wolf, and re-upload revives it.
+server.today = server.today + 31
+do
+  local Sync = activate(A)
+  local listed
+  Sync.link:list(function(l) listed = l end)
+  check("the slot lists as expired", (function()
+    for _, s in ipairs(listed or {}) do
+      if s.slot == 1 and s.expired then return true end
+    end
+  end)())
+  Sync.startBoot()
+  pump(A, 10)
+  check("an expired slot is not 'news'", Sync.boot ~= "behind")
+
+  local err
+  Sync.pull(1, nil, function(_, e) err = e end)
+  pump(A, 10)
+  eq("downloading an expired slot answers not_found", err, "not_found")
+
+  -- re-upload revives (same lineage, stored rev): use B, whose binding
+  -- rev matches what the server last held
+  local SyncB = activate(B)
+  local okRevive
+  SyncB.push("red-aaaa0001", 1, false, function(ok) okRevive = ok end)
+  pump(B, 10)
+  eq("re-upload revives the tombstone", okRevive, true)
+  check("bytes are back", server.slots[1].bytes ~= nil)
 end
 
-activate(E)
-local eSnapsBefore = E.Snapshot.list(key13)
-check("device E has snapshots to sync", #eSnapsBefore > 0)
-eq("device E syncs cleanly", sync(E), "idle")
-
-local snapCloudCount = 0
-for name in pairs(cloud.files) do
-  if isKey13Snapshot(name) then snapCloudCount = snapCloudCount + 1 end
+-- 10. Logout hygiene: account gone, bindings gone, recovery code kept.
+do
+  local Sync, Store = activate(B)
+  Sync.logout()
+  eq("logged out", Sync.configured(), false)
+  eq("bindings cleared", Sync.keyForSlot(1), nil)
+  eq("recovery code kept", Store.config().recoveryCode, "G1MMO-FAKE-CODE")
 end
-eq("every local snapshot reached the cloud", snapCloudCount, #eSnapsBefore)
-
-local sawSnapName = false
-for name in pairs(cloud.files) do
-  if name:find("%.snap$") then
-    sawSnapName = true
-    check("snapshot cloud name matches the server's validator: " .. name,
-      validCloudName(name))
-  end
-end
-check("at least one snapshot cloud name was checked", sawSnapName)
-
-local F = newDevice("Device F")
-activate(F)
-eq("device F syncs cleanly", sync(F), "idle")
-local fSnaps = F.Snapshot.list(key13)
-eq("device F adopted every snapshot", #fSnaps, #eSnapsBefore)
-
--- 16. PRUNING KEEPS THE NEWEST TEN, LOCALLY AND IN THE CLOUD.
---
--- A device and a playthrough id of its own: key13 already carries the
--- handful of snapshots section 17 below depends on still being present, and
--- names taken within the same wall-clock second sort by hash, not by true
--- creation order (see snapshot.lua's own comment on why the hash is there),
--- so hammering key13 with fifteen more here could evict one of those on
--- nothing more than a tie-break.  A fresh key sidesteps the question.
-local G = newDevice("Device G")
-activate(G)
-G.checkpointState.playthroughId = "PLAYPRUNE"
-local keyPrune = "red-PLAYPRUNE"
-local function isPruneSnapshot(name)
-  return name:match("^red%-PLAYPRUNE%.s%d+%-%d+%-%x+%.snap$") ~= nil
-end
-
--- Sync after EVERY take, not once at the end.  Local pruning caps the disk
--- at ten regardless, so a single sync at the end would only ever have ten
--- files to offer and would pass even with cloud-side pruning deleted
--- outright.  Syncing every time is what makes the cloud accumulate past ten
--- unless ITS OWN prune (the thing actually under test here) trims it back.
-local lastSyncState
-for i = 1, 15 do
-  G.checkpointState.badges = 100 + i    -- distinct content each time, so
-  G.Snapshot.take(nil, "manual")        -- rapid calls do not collide on name
-  lastSyncState = sync(G)
-end
-eq("every incremental sync stayed clean", lastSyncState, "idle")
-local localCount16 = #G.Snapshot.list(keyPrune)
-check("local snapshots are capped at ten", localCount16 <= 10,
-  "kept " .. localCount16)
-
-local cloudCount16 = 0
-for name in pairs(cloud.files) do
-  if isPruneSnapshot(name) then cloudCount16 = cloudCount16 + 1 end
-end
-check("cloud snapshots are capped at ten too", cloudCount16 <= 10,
-  "kept " .. cloudCount16)
-
--- 17. RESTORING A SNAPSHOT TAKES A RECOVERY ONE FIRST.
---
--- snapshot.lua's own comment says why: Checkpoint.restore rolls back in
--- memory on failure, but a caller wanting durable crash recovery has to
--- capture its own -- so Snapshot.restore does, unconditionally, before it
--- ever asks the engine to restore anything.  The engine side is a fake
--- here; what is under test is that Snapshot.restore's own ordering holds.
-activate(E)
-E.checkpointState.badges = 777
-local marked = E.Snapshot.take(nil, "manual")
-check("a marker snapshot exists to restore", marked ~= nil)
-
-E.checkpointState.badges = 888   -- distinct, so the recovery capture cannot
-                                  -- be mistaken for one already on disk
-local ok17, err17 = E.Snapshot.restore(nil, key13, marked)
-check("restore reports success", ok17, err17)
-
-local sawRecovery = false
-for _, row in ipairs(E.Snapshot.list(key13)) do
-  local rec = E.Snapshot.decode(E.Snapshot.readRaw(key13, row.name))
-  if rec and rec.tag == "undo" and rec.checkpoint.save.badges == 888 then
-    sawRecovery = true
-  end
-end
-check("a recovery snapshot (tagged 'undo') was taken before restoring",
-  sawRecovery)
-
--- Even a restore the engine itself refuses still leaves that recovery
--- snapshot behind -- Snapshot.take happens unconditionally before the
--- engine is ever asked, not only when the engine is about to say yes.
-local realRestore = E.checkpoints.restore
-E.checkpoints.restore = function() return false, "restore_failed", "no." end
-E.checkpointState.badges = 999
-local okFail, errFail = E.Snapshot.restore(nil, key13, marked)
-check("a restore the engine refuses reports failure", okFail == false)
-eq("with the engine's own message", errFail, "no.")
-local sawFailRecovery = false
-for _, row in ipairs(E.Snapshot.list(key13)) do
-  local rec = E.Snapshot.decode(E.Snapshot.readRaw(key13, row.name))
-  if rec and rec.tag == "undo" and rec.checkpoint.save.badges == 999 then
-    sawFailRecovery = true
-  end
-end
-check("a recovery snapshot was captured even though the restore failed",
-  sawFailRecovery)
-E.checkpoints.restore = realRestore
-
--- --------------------------------------------------------------- wrap
---
--- Util.wrap is what stands between a long engine or provider message and a
--- player who cannot read it -- see mod/src/ui.lua's file header.  Tested
--- directly here because ui.lua itself needs real font sheets to render.
-
-activate(A)
-local Util = A.include("src/util.lua")
-
-eq("wrap: short text is one line", #Util.wrap("hello", 19), 1)
-eq("wrap: lossless when it fits on one line", Util.wrap("hello", 19)[1], "hello")
-
-local longText = "the quick brown fox jumps over the lazy dog"
-local wrapped = Util.wrap(longText, 10)
-local widest = 0
-for _, line in ipairs(wrapped) do widest = math.max(widest, #line) end
-check("wrap: never exceeds the requested width", widest <= 10, widest)
-eq("wrap: lossless when rejoined", table.concat(wrapped, " "), longText)
-
-local oneLongWord = "supercalifragilisticexpialidocious"
-local brokenWord = Util.wrap(oneLongWord, 10)
-check("wrap: a single over-long word is hard-broken, not left overflowing",
-  #brokenWord > 1)
-local widestWord = 0
-for _, line in ipairs(brokenWord) do widestWord = math.max(widestWord, #line) end
-check("wrap: hard-broken chunks still respect the width", widestWord <= 10,
-  widestWord)
-eq("wrap: hard-broken chunks rejoin losslessly", table.concat(brokenWord), oneLongWord)
-
-eq("wrap: empty text wraps to one empty line", #Util.wrap("", 19), 1)
-eq("wrap: whitespace-only text wraps to one empty line", #Util.wrap("   ", 19), 1)
-
--- 12. BINARY SAFETY.
---
--- A save is a byte string: the engine's %q serialiser passes bytes >= 0x80
--- through raw, so save.lua need not be valid UTF-8. Every fixture in this
--- file used to be pure ASCII, which is exactly why the wire format could be
--- binary-unsafe for months and every test still passed -- while the first
--- real install got `400 Problems parsing JSON` from GitHub and uploaded
--- nothing. These bytes are the hostile ones: a lone 0xE9 (invalid UTF-8 on
--- its own), a valid multi-byte sequence, NUL, DEL, 0xFF, and the characters
--- JSON itself cares about.
-local HOSTILE = "name=" .. string.char(233) .. " lone-high "
-  .. string.char(194, 165) .. " yen " .. string.char(0) .. " nul "
-  .. string.char(127) .. " del " .. string.char(255) .. " ff "
-  .. string.char(34) .. "quote" .. string.char(34) .. " "
-  .. string.char(92) .. " backslash " .. string.char(10) .. string.char(9)
-
-activate(A)
-local enc = A.Sync.encodeBlob(HOSTILE)
-eq("blob encoding is ASCII-safe", enc:find("[\128-\255]"), nil)
-check("blob encoding is self-describing", enc:sub(1, 4) == "b64:")
-eq("blob round-trips byte-identically", A.Sync.decodeBlob(enc), HOSTILE)
-eq("blob length survives", #A.Sync.decodeBlob(enc), #HOSTILE)
-
--- An object written before the prefix existed must still read back, or a
--- history entry from an older build becomes unrecoverable.
-eq("legacy raw payloads still decode", A.Sync.decodeBlob("return {}"), "return {}")
-
--- And the whole way through: a save carrying those bytes must reach another
--- device unchanged, hash included.
-local E = newDevice("Device E")
-local F = newDevice("Device F")
-play(E, { version = "red", player = { name = "RED" }, badges = 1, junk = HOSTILE,
-          meta = { playthroughId = "PLAYBIN1", savedAt = 1000 } })
-eq("E uploads a binary-laden save", sync(E), "idle")
-eq("F adopts it", sync(F), "idle")
-
-activate(E)
-local eRec = E.Store.readSlot("red", E.saveData.activeSlot())
-activate(F)
-local fRec
-for _, sl in ipairs(F.saveData.listSlots("red")) do
-  local r = F.Store.readSlot("red", sl.id)
-  if r and r.key == "red-PLAYBIN1" then fRec = r end
-end
-check("F received the binary save", fRec ~= nil)
-if fRec and eRec then
-  eq("bytes survived the round trip", fRec.bytes, eRec.bytes)
-  eq("hash agrees on both devices", fRec.hash, eRec.hash)
-  eq("the hostile bytes are intact", fRec.save.junk, HOSTILE)
-end
-
--- Nothing binary may reach the wire, whatever the save contains.
-for name, body in pairs(cloud.files) do
-  if name:match("^red%-PLAYBIN1%.") and not name:match("%.json$") then
-    eq("cloud object is ASCII: " .. name, body:find("[\128-\255]"), nil)
-  end
-end
-
--- 13. SLOT OVERVIEW and generic version enumeration.
---
--- versions() reads the engine's registry rather than naming Red/Blue/Yellow,
--- so an engine that adds Gold or Crystal is synced by this code unchanged.
--- A hardcoded list would ignore them silently, stranding a playthrough on one
--- machine with nothing to show for it.
-
-activate(A)
-local seen = {}
-for _, v in ipairs(A.Store.versions()) do seen[v] = true end
-check("versions() finds the engine's registered version", seen.red == true)
-
--- Pretend the engine grew a Gen 2 entry. Nothing in the mod is Gen 1
--- specific, so this must be picked up with no code change.
-A.gameVersion.VERSIONS = { red = { id = "red" }, gold = { id = "gold" } }
-local gen2 = {}
-for _, v in ipairs(A.Store.versions()) do gen2[v] = true end
-check("a new engine version is synced without a code change", gen2.gold == true)
-check("and the existing one still is", gen2.red == true)
-eq("the list is sorted, so cycles are deterministic",
-  table.concat(A.Store.versions(), ","), "gold,red")
-A.gameVersion.VERSIONS = { red = { id = "red" } }
-
--- The overview is what the Save files screen draws.
-local over = A.Store.slotOverview({})
-check("slot overview lists this device's saves", #over > 0)
-local found
-for _, row in ipairs(over) do if row.version == "red" then found = row end end
-check("a row names its version and slot", found ~= nil
-  and found.slotId ~= nil and found.key ~= nil)
-eq("a save matching the cloud reads as synced", found and found.status, "synced")
-
--- A save the cloud has not seen must not claim to be safe.
-activate(A)
-A.Store.keyState(found.key).syncedHash = nil
-local after = A.Store.slotOverview({})
-for _, row in ipairs(after) do
-  if row.key == found.key then
-    eq("an unsynced save says so", row.status, "new")
-  end
-end
-
--- A conflicted save is called out rather than shown as merely waiting.
-local conflicted = A.Store.slotOverview({ [found.key] = true })
-for _, row in ipairs(conflicted) do
-  if row.key == found.key then eq("a conflict is surfaced", row.status, "conflict") end
-end
-
--- 14. OLD SAVES AND OLD CLOUD OBJECTS MUST STILL RESTORE.
---
--- History outlives the code that wrote it. Two shapes changed after the
--- first release -- payloads gained a "b64:" prefix and history filenames
--- gained a timestamp -- and a player who has been using this for weeks holds
--- objects in the older form. Refusing those would quietly turn their backups
--- into nothing on the day they finally need one.
-
-activate(A)
-
--- An old-style raw payload (no b64: prefix) decodes as itself.
-eq("a pre-b64 payload still decodes",
-  A.Sync.decodeBlob("return {[\"version\"]=\"red\"}"), "return {[\"version\"]=\"red\"}")
-
--- An old-style history object (no timestamp in the name) is still listed and
--- still restorable. Write one by hand, exactly as an older build would have.
-local oldName = "red-PLAY0001.h0009.sav"
-cloud.files[oldName] = A.Sync.encodeBlob(
-  serialize({ version = "red", player = { name = "OLD" }, badges = 9,
-              meta = { playthroughId = "PLAY0001", savedAt = 1 } }))
-
-local histOp = A.Sync.history("red-PLAY0001")
-local found
-for _ = 1, 4000 do
-  local st, v = histOp:poll()
-  if st ~= "pending" then found = (st == "ok") and v or nil break end
-end
-local sawOld = false
-for _, h in ipairs(found or {}) do
-  if h.name == oldName then sawOld = true end
-end
-check("an old-shape history entry is still listed", sawOld)
-
--- And restoring it puts the old save back on disk.
-local rop = A.Sync.restoreHistory("red-PLAY0001", oldName)
-local restored
-for _ = 1, 4000 do
-  local st, v = rop:poll()
-  if st ~= "pending" then restored = (st == "ok") break end
-end
-check("an old-shape history entry still restores", restored == true)
-eq("and the old save is what landed", localSave(A).player.name, "OLD")
-
--- 15. THE RUNAWAY SLOT BUG.
---
--- Reported from a real device: "there are now 50 pages of individual save
--- slots on my game". A save with no playthroughId was keyed by its SLOT --
--- device-local by construction. Downloaded onto a machine where that slot
--- was taken, it matched nothing, so apply() made a new slot; the new slot's
--- key then computed to the NEW slot id, so the next cycle matched nothing
--- either. One new save slot per sync cycle, forever.
-
-local G = newDevice("Device G")
-
--- A save the engine has never stamped: no meta.playthroughId.
-play(G, { version = "red", player = { name = "NOID" }, badges = 1, meta = {} })
-activate(G)
-local unidentified = G.Store.readAllLocal()
-local count = 0
-for _ in pairs(unidentified) do count = count + 1 end
-eq("an unstamped save does not sync at all", count, 0)
-
--- ...and it is still visible to the player, rather than silently ignored.
-local before = #G.saveData.listSlots("red")
-check("the slot itself still exists", before > 0)
-
--- Now the loop itself: apply the same key repeatedly, as a stuck sync would.
-local H = newDevice("Device H")
-play(H, { version = "red", player = { name = "RED" }, badges = 1,
-          meta = { playthroughId = "PLAYRUN1", savedAt = 1 } })
-activate(H)
-local startSlots = #H.saveData.listSlots("red")
-
--- A DIFFERENT playthrough arrives; it legitimately gets one new slot.
-local incoming = serialize({ version = "red", player = { name = "OTHER" },
-  badges = 2, meta = { playthroughId = "PLAYRUN2", savedAt = 2 } })
-for i = 1, 12 do
-  local ok = H.Store.apply("red", "red-PLAYRUN2", incoming, "cloud")
-  check("apply #" .. i .. " succeeded", ok == true)
-end
-local endSlots = #H.saveData.listSlots("red")
-eq("twelve applies of one save make exactly one slot", endSlots, startSlots + 1)
-
--- And the remembered mapping is what makes it idempotent.
-eq("the slot is remembered against the key",
-  H.Store.slotFor("red-PLAYRUN2") ~= nil, true)
-
--- 16. THE LEGACY CLOUD OBJECT.
---
--- Every cloud written by v1.9.x and earlier contains objects keyed the old
--- device-local way ("red-slot1"). Fixing keyFor does nothing for those --
--- they are already up there. Applying one writes a save whose OWN key is
--- "red-<playthroughId>", which findSlotForKey will never match against
--- "red-slot1", so the runaway continues on exactly the installs that have
--- the problem. The remembered slot map is what stops it.
-
-local L = newDevice("Device L")
-play(L, { version = "red", player = { name = "MINE" }, badges = 1,
-          meta = { playthroughId = "MINE0001", savedAt = 1 } })
-activate(L)
-local baseline = #L.saveData.listSlots("red")
-
--- A legacy-keyed object holding a properly stamped save: key and content
--- disagree about identity, which is the whole problem.
-local legacy = serialize({ version = "red", player = { name = "OLD" },
-  badges = 3, meta = { playthroughId = "OTHER002", savedAt = 9 } })
-for i = 1, 15 do
-  check("legacy apply #" .. i, L.Store.apply("red", "red-slot1", legacy, "cloud") == true)
-end
-eq("fifteen applies of a legacy-keyed object make exactly one slot",
-  #L.saveData.listSlots("red"), baseline + 1)
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)
