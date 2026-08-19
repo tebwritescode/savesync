@@ -189,9 +189,7 @@ jobs:
           # the mod description leads the notes, so every version screen says
           # what the mod IS before what changed
           desc="$(python3 -c "import json; print(json.load(open('mod/manifest.json', encoding='utf-8')).get('description',''))")"
-          notes="$desc"$'
-
-''Download the .zip and install it from the game: MODS > Import mod .zip.'
+          notes="$desc"$'\n\n'"Download the .zip and install it from the game: MODS > Import mod .zip."
           if [ -n "$changes" ]; then
             notes+=$'\n\n## Changes\n\n'"$changes"
           fi
