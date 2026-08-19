@@ -195,7 +195,10 @@ do
     request = function(t)
       rec.t = t
       if t.sink then t.sink[#t.sink + 1] = "from socket" end
-      return 200
+      -- REAL luasocket contract: 1 first, the HTTP status SECOND.  The first
+      -- draft of this fake returned the code first, and the shipped transport
+      -- faithfully read the wrong value -- every response said "HTTP 1".
+      return 1, 200, {}, "HTTP/1.1 200 OK"
     end,
   }
   local Http = loadHttp({ love = fakeLove({ threads = false }),
@@ -220,6 +223,17 @@ do
     h["Authorization"], "Bearer srv")
   -- Without Content-Length the far end waits for a body that never ends.
   eq("a body is given its length", h["Content-Length"], "9")
+end
+
+-- 7b. luasocket reports failure as nil, err -- that must land as an error,
+-- and an err string in the code position must never read as a status.
+do
+  local socket = { request = function() return nil, "connection refused" end }
+  local Http = loadHttp({ love = fakeLove({ threads = false }),
+                          https = nil, socket = socket })
+  local st = Http.poll(Http.request({ url = "http://10.0.0.9/x" }))
+  eq("a luasocket failure is an error job", st.status, "error")
+  eq("with no fabricated status code", st.code, nil)
 end
 
 -- 8. luasocket cannot do TLS, so an https:// URL must NOT be handed to it.

@@ -8,6 +8,7 @@ luajit tests/sync.test.lua     # two devices over one shared cloud
 node   tests/server.test.js    # the self-hosted backend, over real HTTP
 node   tests/e2e.test.js       # the whole stack: sync -> curl -> server
 node   tests/github.test.js    # the GitHub provider, over real HTTP
+node   tests/android.e2e.test.js  # the Android transport: vendored luasocket
 ```
 
 `e2e.test.js` and `github.test.js` need `luajit` and `curl` on PATH.

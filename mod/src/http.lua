@@ -165,18 +165,23 @@ local function trySocket(job)
   http.TIMEOUT = 15
 
   local sink = {}
-  local ok, code = pcall(http.request, {
+  -- luasocket's table form returns 1, code, headers, status on success and
+  -- nil, err on failure -- the HTTP status is the SECOND value.  The first
+  -- draft read the first, so every request through this transport reported
+  -- "HTTP 1" and the self-hosted provider refused it.  The test fake had
+  -- returned the code first, which is exactly how it slipped through.
+  local ok, r1, r2 = pcall(http.request, {
     url = job.url,
     method = (job.method or "GET"):upper(),
     headers = headers,
     source = job.body and ltn12.source.string(job.body) or nil,
     sink = ltn12.sink.table(sink),
   })
-  if not ok or type(code) ~= "number" then
+  if not ok or not r1 or type(r2) ~= "number" then
     post({ id = job.id, ok = false, err = "could not reach that address" })
     return true
   end
-  post({ id = job.id, ok = true, code = code, body = table.concat(sink) })
+  post({ id = job.id, ok = true, code = r2, body = table.concat(sink) })
   return true
 end
 
@@ -540,18 +545,20 @@ local function runInline(id, req, headerMap)
     -- Same reasoning as the worker's, and more urgent here: this IS the
     -- main thread. Without it, one unreachable host locks the game.
     inlineSocket.http.TIMEOUT = 15
-    local ok, code = pcall(inlineSocket.http.request, {
+    -- Same contract as the worker's trySocket: success is 1, code, ... with
+    -- the HTTP status SECOND, failure is nil, err.
+    local ok, r1, r2 = pcall(inlineSocket.http.request, {
       url = req.url,
       method = (req.method or "GET"):upper(),
       headers = headers,
       source = req.body and inlineSocket.ltn12.source.string(req.body) or nil,
       sink = inlineSocket.ltn12.sink.table(sink),
     })
-    if not ok or type(code) ~= "number" then
+    if not ok or not r1 or type(r2) ~= "number" then
       jobs[id].status, jobs[id].err = "error", "could not reach that address"
       return
     end
-    jobs[id].status, jobs[id].code = "ok", code
+    jobs[id].status, jobs[id].code = "ok", r2
     jobs[id].body = table.concat(sink)
     return
   end

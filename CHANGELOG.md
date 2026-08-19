@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.15.1] - 2026-08-18
+
+### Fixed
+- **Every plain-HTTP request through luasocket reported "HTTP 1".** luasocket's
+  table-form `request` returns `1, code, headers, status` -- the HTTP status is
+  the SECOND value -- and both transports read the first. The self-hosted
+  provider, the one provider a phone without TLS can use, therefore refused
+  every response with `your server said HTTP 1`, on every platform, since the
+  luasocket path shipped in 1.13.0. The test fake had returned the code first,
+  which is exactly how it slipped through; the fakes now speak the library's
+  real convention, and a failure (`nil, err`) maps to an error rather than a
+  fabricated status.
+
+### Added
+- **An Android end-to-end suite** (`node tests/android.e2e.test.js`): the real
+  worker source, the engine's REAL vendored luasocket (the same `http.lua` the
+  Android APK compiles) over a raw FFI TCP socket, the real backend -- pairing
+  from the server's own setup code, hostile-byte uploads landing
+  byte-identical on a second device, 404s as answers, 401s in the player's
+  language. Reverting the status-code fix fails eight of its checks with
+  `said HTTP 1` -- the field symptom, reproduced on demand.
+
 ## [1.15.0] - 2026-08-18
 
 ### Changed
