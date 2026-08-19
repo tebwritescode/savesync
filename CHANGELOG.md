@@ -3,7 +3,23 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.15.0] - 2026-08-18
+
+### Changed
+- **SaveSync now needs Gen1Recomp 0.2.0 or newer**, and declares the engine's
+  new `compute` permission. Background HTTP runs on `love.thread` workers, and
+  from engine 0.1.92 the mod sandbox refuses `love.thread` outright; 0.2.0
+  added `compute` as the way to ask for it back. Without those workers there is
+  no way to reach `curl` at all -- the sandbox refuses `io.popen` on the main
+  thread -- so on a desktop build GitHub and Dropbox would have no transport
+  left. The floor is declared in `game_version`, so the mod browser says
+  `Needs engine >=0.2.0 (have ...)` instead of offering a download that cannot
+  run.
+- **Your device asks for its sign-in once more.** The sandbox reroutes a mod's
+  file writes into its own private area, so the config written by earlier
+  releases at `savesync/config.lua` is no longer where the mod reads. Saves are
+  untouched -- they are the game's, not the mod's -- and the cloud copy is
+  untouched, so setting up again picks the same playthroughs straight back up.
 
 ### Fixed
 - **Setting up a fresh sync crashed the game.** Since gen1recomp 0.1.92 a mod

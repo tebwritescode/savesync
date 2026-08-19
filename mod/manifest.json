@@ -1,15 +1,17 @@
 {
   "id": "savesync",
   "name": "SaveSync",
-  "version": "1.14.1",
+  "version": "1.15.0",
   "author": "Teb",
   "description": "Automatic cross-device saves for Gen1Recomp - your save follows you to every device you play on, stored on free space that belongs to you.",
   "api": 2,
+  "game_version": ">=0.2.0",
   "entry": "main.lua",
   "permissions": [
     "network",
     "filesystem",
-    "engine_internals"
+    "engine_internals",
+    "compute"
   ],
   "tags": [
     "tools",
