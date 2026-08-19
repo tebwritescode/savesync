@@ -28,6 +28,14 @@ workflow resolves the version from the manifest and refuses to clobber
 existing tags. Commits touching only `.github/**` or `**.md` do not
 trigger it, so docs and workflow maintenance are always safe to push.
 
+
+## Release notes
+
+`release.yml` opens every release's notes with the manifest `description`,
+so the launcher's version screens always say what the mod is before what
+changed. Keep the description current — it is the first thing a player
+reads on every version.
+
 ## The checklist before any release
 
 - [ ] `manifest.json`: semver bumped, `"github": "tebwritescode/<repo>"` set
