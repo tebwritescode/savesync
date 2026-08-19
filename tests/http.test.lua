@@ -233,5 +233,68 @@ do
   eq("and luasocket was never called", rec.t, nil)
 end
 
+-- 9. THE MOD SANDBOX: love.thread does not read as nil, it RAISES.
+--
+-- gen1recomp 0.1.92 moved mods into a sandbox whose love facade ERRORS on
+-- love.thread ("love.thread is not available to mods"); 0.2.0 reworded it to
+-- name a new "compute" permission. `love and love.thread and ...` therefore
+-- never degraded to false -- it threw, straight out of Http.available(),
+-- which is the first call the SaveSync screen makes. Setting up a fresh sync
+-- did not fail politely, it took the whole game down, and the inline
+-- transport built for iOS was never reached on any platform.
+local function sandboxedLove(opts)
+  local real = fakeLove(opts)
+  local facade = { filesystem = real.filesystem, system = real.system }
+  return setmetatable({}, {
+    __index = function(_, key)
+      if key == "thread" then
+        error('love.thread needs the "compute" permission in manifest.json', 2)
+      end
+      return facade[key]
+    end,
+  })
+end
+
+do
+  local rec = {}
+  local Http = loadHttp({ love = sandboxedLove({ threads = true }),
+                          https = fakeHttps(rec, 200, "device code") })
+  local okAvail, avail = pcall(Http.available)
+  check("a sandbox that raises on love.thread does not crash the caller", okAvail)
+  eq("and the device still has its inline transport", avail, true)
+  check("isInline answers instead of throwing", (pcall(Http.isInline)))
+  check("tlsCapable answers instead of throwing", (pcall(Http.tlsCapable)))
+  check("diagnostics answers instead of throwing", (pcall(Http.diagnostics)))
+  check("unavailableReason answers instead of throwing",
+    (pcall(Http.unavailableReason)))
+
+  -- The exact first request a fresh GitHub setup makes.
+  local ok, id = pcall(Http.request, {
+    method = "POST", url = "https://github.com/login/device/code",
+    headers = { ["Accept"] = "application/json" }, body = "client_id=x&scope=gist",
+  })
+  check("the device-code POST that begins a fresh setup does not crash", ok)
+  if ok then
+    eq("and it completes through the inline transport",
+      Http.poll(id).status, "ok")
+    eq("carrying the body back", Http.poll(id).body, "device code")
+  end
+end
+
+-- 10. The same sandbox on a device with no inline transport either: still a
+-- sentence the player can read, still not a crash.
+do
+  local Http = loadHttp({ love = sandboxedLove({ threads = true }), https = nil })
+  local okAvail, avail = pcall(Http.available)
+  check("a raising sandbox with no transport still answers", okAvail)
+  eq("and answers false", avail, false)
+  local okWhy, why = pcall(Http.unavailableReason)
+  check("the reason is a sentence, not a traceback",
+    okWhy and type(why) == "string" and why:find("%s") ~= nil)
+  local ok, id = pcall(Http.request, { url = "https://example.com/x" })
+  check("a request fails instead of crashing", ok)
+  if ok then eq("as an error job", Http.poll(id).status, "error") end
+end
+
 print(("%d passed, %d failed"):format(passed, failed))
 if failed > 0 then os.exit(1) end

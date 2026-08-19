@@ -39,6 +39,9 @@ local ready
 local unavailableReason
 local jobs = {}
 local nextId = 0
+-- What the worker reported about this device, once it has answered.
+local workerCaps
+local capsAsked = false
 
 -- The worker runs in a fresh Lua state with no "src.*" package searcher, so
 -- HostShell comes in through love.filesystem.load -- the same trick
@@ -336,11 +339,52 @@ while true do
   if quitCh:peek() ~= nil then break end
   if type(job) == "table" then
     if job.kind == "quit" then break end
-    local ok, err = pcall(doRequest, job)
-    if not ok then post({ id = job.id, ok = false, err = tostring(err) }) end
+    if job.kind == "caps" then
+      -- WHAT THIS DEVICE REALLY HAS, asked where the answer lives.  curl is
+      -- reached through io.popen, and the mod sandbox on the main thread
+      -- refuses io.popen outright -- so the main thread CANNOT test for curl
+      -- and every answer it gave was a guess.  The worker is a plain Lua
+      -- state, so it can simply look.
+      local curl = false
+      if HostShell and HostShell.haveCurl then
+        local okc, v = pcall(HostShell.haveCurl)
+        curl = okc and v == true
+      end
+      local okSock = pcall(require, "socket.http")
+      post({ id = job.id, caps = { https = https ~= nil, curl = curl,
+                                   socket = okSock and true or false } })
+    else
+      local ok, err = pcall(doRequest, job)
+      if not ok then post({ id = job.id, ok = false, err = tostring(err) }) end
+    end
   end
 end
 ]==]
+
+-- REACHING FOR love.thread CAN THROW, AND THAT CRASHED THE GAME.
+--
+-- The engine's mod sandbox does not hide love.thread behind a nil -- its love
+-- facade RAISES on the lookup:
+--
+--   engine 0.1.92+  "love.thread is not available to mods, use mod.fetch ..."
+--   engine 0.2.0+   'love.thread needs the "compute" permission in manifest.json'
+--
+-- So `love and love.thread and love.thread.newThread` does not degrade to
+-- false, it throws -- and that expression was the first thing every entry
+-- point into this file evaluated.  Opening SaveSync and pressing the first
+-- row calls Http.available(), so setting up a fresh sync did not fail, it
+-- took the whole game down.  Everything the iOS work built for a device with
+-- no worker threads was sitting right there and could never be reached.
+--
+-- pcall, therefore: a blocked love.thread is exactly a device with no worker
+-- threads, which this file already knows how to be.
+local blockedByHost
+local function threadModule()
+  local ok, t = pcall(function() return love and love.thread or nil end)
+  if ok then return t end
+  blockedByHost = true
+  return nil
+end
 
 -- Workers retire when idle (see the worker source), so this both starts the
 -- pool the first time and tops it back up afterwards.  Threads that have
@@ -348,15 +392,18 @@ end
 -- over a long session and every later request would queue forever.
 local function ensureWorkers()
   if ready == false then return false end
-  if not (love and love.thread and love.thread.newThread) then
-    ready, unavailableReason = false,
-      "this app cannot reach the internet for SaveSync"
+  local thread = threadModule()
+  if not (thread and thread.newThread) then
+    ready = false
+    unavailableReason = blockedByHost
+      and "this build of the game does not let SaveSync run background workers"
+      or "this app cannot reach the internet for SaveSync"
     return false
   end
   if not cmdCh then
-    cmdCh = love.thread.getChannel(CMD)
-    resCh = love.thread.getChannel(RESULT)
-    quitCh = love.thread.getChannel(QUIT)
+    cmdCh = thread.getChannel(CMD)
+    resCh = thread.getChannel(RESULT)
+    quitCh = thread.getChannel(QUIT)
     -- Channels are global to the process and outlive a pool, so a pool
     -- started after a shutdown has to clear the previous round's quit flag
     -- or its workers exit on their first job.
@@ -371,7 +418,7 @@ local function ensureWorkers()
   workers = alive
 
   for _ = #workers + 1, POOL do
-    local ok, th = pcall(love.thread.newThread, WORKER_SOURCE)
+    local ok, th = pcall(thread.newThread, WORKER_SOURCE)
     if ok and th and pcall(function() th:start() end) then
       workers[#workers + 1] = th
     end
@@ -381,6 +428,16 @@ local function ensureWorkers()
     return false
   end
   ready = true
+  -- Ask the worker once what this device actually has.  Only the worker can
+  -- answer -- see the caps arm of its loop -- and tlsCapable() decides which
+  -- providers the setup screen is willing to offer, so the answer has to be
+  -- measured rather than assumed.
+  if not capsAsked then
+    capsAsked = true
+    nextId = nextId + 1
+    jobs[nextId] = { status = "pending" }
+    cmdCh:push({ id = nextId, kind = "caps" })
+  end
   return true
 end
 
@@ -388,7 +445,10 @@ local function drain()
   if not resCh then return end
   local msg = resCh:pop()
   while msg do
-    if type(msg) == "table" and msg.id then
+    if type(msg) == "table" and msg.caps then
+      workerCaps = msg.caps
+      jobs[msg.id or 0] = nil
+    elseif type(msg) == "table" and msg.id then
       local j = jobs[msg.id]
       if j and j.status == "pending" then
         j.status = msg.ok and "ok" or "error"
@@ -582,10 +642,22 @@ end
 --- curl and lua-https both do TLS; luasocket does not (no luasec is bundled).
 function Http.tlsCapable()
   if inlineHttps ~= nil then return true end
+  drain()
+  if workerCaps then
+    return workerCaps.curl == true or workerCaps.https == true
+  end
+  -- The main thread cannot answer this itself under the mod sandbox: curl is
+  -- found with io.popen, and io.popen is refused there, so this call only
+  -- ever succeeds on a host that is not sandboxing us.
   if HostShellMain and HostShellMain.haveCurl then
     local ok, v = pcall(HostShellMain.haveCurl)
     if ok and v == true then return true end
   end
+  -- Workers are up but have not reported back yet.  Say yes rather than no:
+  -- the setup screen's very next step is a real request to a real TLS host,
+  -- which is a truer test than any guess made here, and a premature no would
+  -- hide GitHub and Dropbox on a machine where both work.
+  if ensureWorkers() then return true end
   return false
 end
 
@@ -600,14 +672,28 @@ function Http.diagnostics()
   local love_ = love or {}
   local function yn(v) return v and "yes" or "no" end
 
-  local hasThread = not not (love_.thread and love_.thread.newThread)
-  local socket = inlineSocket
+  drain()
+  local thread = threadModule()
+  local hasThread = not not (thread and thread.newThread)
+  -- Everything below comes from the worker where there is one, because the
+  -- worker is the only place that can look.  Reporting a guess here is what
+  -- this function exists to stop.
+  local socket = inlineSocket ~= nil
   local curl = false
-  if HostShellMain and HostShellMain.haveCurl then
+  if workerCaps then
+    socket = socket or workerCaps.socket == true
+    curl = workerCaps.curl == true
+  elseif HostShellMain and HostShellMain.haveCurl then
     local ok, v = pcall(HostShellMain.haveCurl)
     curl = ok and v == true
   end
-  local bridge = not not (love_.system and love_.system.httpDownload)
+  local bridge = false
+  do
+    local ok, v = pcall(function()
+      return love_.system and love_.system.httpDownload
+    end)
+    bridge = ok and type(v) == "function"
+  end
 
   local osName = "?"
   if love_.system and love_.system.getOS then
@@ -623,10 +709,11 @@ function Http.diagnostics()
   local lines = {
     "device: " .. osName,
     "love: " .. ver,
-    "threads: " .. yn(hasThread),
+    "threads: " .. (hasThread and "yes"
+      or (blockedByHost and "blocked by the game" or "no")),
     "https: " .. yn(inlineHttps),
     "sockets: " .. yn(socket),
-    "curl: " .. yn(curl),
+    "curl: " .. ((not workerCaps and hasThread) and "?" or yn(curl)),
     "bridge: " .. yn(bridge),
     "",
   }

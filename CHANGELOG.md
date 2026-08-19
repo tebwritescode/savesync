@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Setting up a fresh sync crashed the game.** Since gen1recomp 0.1.92 a mod
+  runs inside a sandbox whose `love` facade does not hide `love.thread` behind
+  a nil -- it *raises* on the lookup (`love.thread is not available to mods`,
+  and from 0.2.0 `love.thread needs the "compute" permission`). SaveSync's
+  transport opened with `love and love.thread and love.thread.newThread`,
+  which cannot degrade against a host that throws, and that expression is the
+  first thing every entry point into the transport evaluates. Opening SaveSync
+  and pressing `Set up` calls `Http.available()`, so the crash landed exactly
+  on the first step of a fresh setup, on every platform. The reach is now
+  guarded, which makes a blocked `love.thread` mean what it has always meant
+  here -- a device with no worker threads -- so the inline transport written
+  for iOS now serves every host that sandboxes threads.
+- **The transport stopped guessing what the device can do.** `curl` is found
+  through `io.popen`, and the sandbox refuses `io.popen` on the main thread,
+  so every answer `tlsCapable()` and `NETWORK` gave was a guess made where the
+  evidence cannot be reached. A worker now reports what it actually finds --
+  `https`, `curl`, sockets -- and both read that instead. `NETWORK` prints
+  `threads: blocked by the game` and `curl: ?` until the answer arrives,
+  rather than printing a confident `no`.
+
 ## [1.14.1] - 2026-08-12
 
 ### Fixed
