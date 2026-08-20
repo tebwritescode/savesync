@@ -1,9 +1,9 @@
 {
   "id": "savesync",
   "name": "SaveSync",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "author": "Teb",
-  "description": "Your save follows you to every device - five free cloud slots on the official server, one account shared with Gen1MMO, and nothing ever replaces a save without asking you first.",
+  "description": "Gen1Recomp now has save syncing built in (the Sync tab in the launcher) -- use that. SaveSync predates it; this release points you to the official feature.",
   "api": 2,
   "game_version": ">=0.2.0",
   "games": [

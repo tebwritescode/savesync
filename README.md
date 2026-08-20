@@ -1,5 +1,17 @@
 # SaveSync
 
+> **Gen1Recomp now syncs your saves for you.** As of the v0.2.10 client there
+> is a built-in **Sync** tab in the launcher that carries your saves (and mods)
+> across your devices natively — no account setup, no mod required. **Use that.**
+>
+> SaveSync came before the official feature. It still works against the
+> Gen1MMO server, but the built-in sync is the simpler path for everyone now,
+> so that's where to start. The rest of this page is kept for anyone still
+> running the mod.
+
+---
+
+
 **Automatic cross-device saves for
 [Gen1Recomp](https://github.com/bryanthaboi/gen1recomp) — five free cloud
 slots on the official server, and your save follows you to every device you

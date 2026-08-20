@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-08-19
+
+### Changed
+- **Gen1Recomp now syncs saves natively**, as of the v0.2.10 client: a built-in
+  **Sync** tab in the launcher carries saves (and mods) across devices with no
+  account and no mod. That is the simpler path for everyone now, so SaveSync
+  points you to it -- in the README, the manifest, and on the SaveSync screen.
+  The mod still works against the Gen1MMO server for anyone already using it;
+  it is simply no longer the thing a new player should reach for.
+
 ## [2.1.0] - 2026-08-19
 
 ### Added

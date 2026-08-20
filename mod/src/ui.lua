@@ -801,6 +801,7 @@ return function(mod, cfgOpts)
           status = "Not signed in"
         end
         menuDraw("SAVESYNC", mainItems(), {
+          "Gen1Recomp now syncs saves itself -- see the launcher Sync tab.",
           status,
           "Last synced: " .. Util.ago(Store.config().lastSync or 0),
         })
