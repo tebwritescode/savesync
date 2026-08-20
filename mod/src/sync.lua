@@ -141,7 +141,11 @@ local function newLink()
     onEvent = function(kind, data)
       if kind == "credentials" then
         local c = Store.config()
-        c.account = { name = data.name, verifier = data.verifier }
+        c.account = {
+          name = data.name, verifier = data.verifier,
+          deviceSeed = data.deviceSeed, devicePub = data.devicePub,
+          deviceEnrolled = data.deviceEnrolled,
+        }
         Store.saveConfig(c)
       elseif kind == "recovery_code" then
         -- kept re-readable from the Account screen, like Gen1MMO does.
@@ -156,6 +160,15 @@ local function newLink()
   return Sync.link
 end
 
+--- The device keypair from the stored account, as serverlink wants it.
+local function storedDevice(c)
+  local a = c.account
+  if not (a and a.deviceSeed) then return nil end
+  return { seed = Crypto.fromHex(a.deviceSeed),
+           pub = a.devicePub and Crypto.fromHex(a.devicePub) or nil,
+           enrolled = a.deviceEnrolled == true }
+end
+
 --- A ready link, or nil plus why not. Starts a stored-credential session
 --- when none is up.
 local function readyLink()
@@ -165,16 +178,16 @@ local function readyLink()
     return nil, "not signed in"
   end
   if not Sync.link or Sync.link.state == "offline" or Sync.link.state == "error" then
-    newLink():loginStored(c.account.name, c.account.verifier)
+    newLink():loginStored(c.account.name, c.account.verifier, storedDevice(c))
   end
   return nil, "connecting"
 end
 
 --- Auth entry points for the UI. Passwords pass through to the link and
 --- are burned to verifiers there; nothing here retains them.
-function Sync.register(name, password) newLink():register(name, password) end
-function Sync.login(name, password) newLink():login(name, password) end
-function Sync.recover(name, code, newPassword) newLink():recover(name, code, newPassword) end
+function Sync.register(name, password) newLink():register(name, password, storedDevice(Store.config())) end
+function Sync.login(name, password) newLink():login(name, password, storedDevice(Store.config())) end
+function Sync.recover(name, code, newPassword) newLink():recover(name, code, newPassword, storedDevice(Store.config())) end
 
 function Sync.logout()
   if Sync.link then Sync.link:disconnect() end

@@ -79,6 +79,15 @@ end
 function Link:_open(auth)
   if self.net then self.net:close() end
   self.net = Net.new()
+  -- A device keypair (passkey-style). Generated fresh at register if the
+  -- shared credential does not already hold one; reused otherwise. The seed
+  -- is 32 bytes; the server stores only the public key.
+  auth.device = auth.device or {}
+  if not auth.device.seed and auth.intent == "register" then
+    auth.device.seed = Crypto.fromHex(Crypto.randomHex(32))
+    auth.device.pub = Tunnel.edPublicKey(auth.device.seed)
+    auth.device.enrolled = false
+  end
   self._auth = auth
   self.errorCode = nil
   self.recoveryCode = nil
@@ -128,25 +137,27 @@ end
 --- Begin a session. Credentials never persist here: the caller keeps the
 --- (name, derived verifier) pair; passwords are burned to verifiers at the
 --- first opportunity and never stored anywhere.
-function Link:register(name, password)
-  return self:_open({ intent = "register", name = name, password = password })
+function Link:register(name, password, device)
+  return self:_open({ intent = "register", name = name, password = password, device = device })
 end
 
-function Link:login(name, password)
-  return self:_open({ intent = "login", name = name, password = password })
+function Link:login(name, password, device)
+  return self:_open({ intent = "login", name = name, password = password, device = device })
 end
 
 --- Sign in with the derived verifier remembered from a previous session.
-function Link:loginStored(name, verifier)
-  return self:_open({ intent = "login_stored", name = name, verifier = verifier })
+--- `device` = { seed, pub, enrolled } carries the passkey-style device key so
+--- a returning device signs the login nonce instead of sending the verifier.
+function Link:loginStored(name, verifier, device)
+  return self:_open({ intent = "login_stored", name = name, verifier = verifier, device = device })
 end
 
 --- Recovery: prove the one-time code, set a new password. On success the
 --- server issues a FRESH code (one-shot rule) which lands in
 --- self.recoveryCode exactly like registration's.
-function Link:recover(name, code, newPassword)
+function Link:recover(name, code, newPassword, device)
   return self:_open({ intent = "recover", name = name, code = code,
-                      password = newPassword })
+                      password = newPassword, device = device })
 end
 
 function Link:ready()
@@ -274,8 +285,20 @@ function Link:_onMessage(m)
       a.pendingVerifier = Crypto.verifier(a.password, m.salt)
       a.password = nil
     end
-    self.net:send({ type = "login", mode = "sync", name = a.name,
-                    verifier = a.pendingVerifier })
+    -- Build the proof. A returning ENROLLED device signs the fresh nonce and
+    -- sends NO verifier -- non-replayable, no password on the wire. A device
+    -- that is not yet enrolled sends the verifier (and its pubkey), so the
+    -- server enrols the key on this password-verified login.
+    local frame = { type = "login", mode = "sync", name = a.name }
+    local dev = a.device
+    if dev and dev.seed and m.nonce then
+      frame.deviceKey = Crypto.toHex(dev.pub)
+      frame.deviceSig = Crypto.toBase64(Tunnel.edSign(dev.seed, m.nonce .. ":" .. a.name))
+      if not dev.enrolled then frame.verifier = a.pendingVerifier end
+    else
+      frame.verifier = a.pendingVerifier
+    end
+    self.net:send(frame)
 
   elseif t == "registered" or t == "recovered" then
     self.recoveryCode = m.recoveryCode
@@ -297,9 +320,18 @@ function Link:_onMessage(m)
     self.slots = m.slots or {}
     self.status = "Signed in as " .. tostring(m.name)
     local a = self._auth
-    if a and a.pendingVerifier and self.onEvent then
-      -- hand the derived verifier up for storage; never a password
-      pcall(self.onEvent, "credentials", { name = m.name, verifier = a.pendingVerifier })
+    if a and self.onEvent then
+      -- hand the derived verifier AND the device key up for storage; never a
+      -- password. A successful sign-in means the device key is now enrolled
+      -- server-side, so future logins can go signature-only.
+      local dev = a.device or {}
+      pcall(self.onEvent, "credentials", {
+        name = m.name,
+        verifier = a.pendingVerifier,
+        deviceSeed = dev.seed and Crypto.toHex(dev.seed) or nil,
+        devicePub = dev.pub and Crypto.toHex(dev.pub) or nil,
+        deviceEnrolled = (dev.seed ~= nil),
+      })
     end
     self._auth = nil
     if self.onEvent then pcall(self.onEvent, "slots", self.slots) end
@@ -402,6 +434,7 @@ function Link:update()
         type = "register", mode = "sync", name = a.name,
         clientSalt = a.clientSalt, verifier = a.pendingVerifier,
         powId = self._powId, powNonce = nonce,
+        deviceKey = a.device.pub and Crypto.toHex(a.device.pub) or nil,
       })
       self.status = "Creating your account..."
     elseif not ok then

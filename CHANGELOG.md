@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-08-19
+
+### Added
+- **Passkey-style device keys.** Each device generates an Ed25519 keypair at
+  sign-up and enrolls its PUBLIC key with the server. A returning device then
+  logs in by SIGNING a fresh server nonce -- no password crosses the wire, the
+  stored value is public (a database leak yields nothing replayable), and the
+  nonce is single-use so a captured proof cannot be replayed. The password
+  stays as the enrollment and recovery path; a forged signature for an
+  enrolled key fails closed. The signing is pure Lua (TweetNaCl Ed25519),
+  validated byte-for-byte against the server's crypto.
+- **Shared login across mods.** SaveSync and Gen1MMO share one account, so
+  signing into either signs into both. A mod with no account of its own adopts
+  a sibling's credential silently through the engine's cross-mod exports
+  channel -- install SaveSync after you are already playing Gen1MMO and it is
+  already logged in. Built to extend to further mods on the same server.
+- **Slots grow with the game list.** The slot count is one per supported game
+  plus a bonus, driven by the server, so a future engine update that adds the
+  Gen 2 titles lifts every account's slot count automatically.
+
 ## [2.0.0] - 2026-08-19
 
 SaveSync now syncs through the official server -- the same server, the

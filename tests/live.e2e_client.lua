@@ -79,6 +79,11 @@ check("credentials event carried the derived verifier",
   type(events.credentials) == "table" and events.credentials.name == NAME
   and type(events.credentials.verifier) == "string")
 local verifier = events.credentials and events.credentials.verifier
+local devSeedHex = events.credentials and events.credentials.deviceSeed
+local devPubHex = events.credentials and events.credentials.devicePub
+check("a device key was generated and enrolled at register",
+  type(devSeedHex) == "string" and #devSeedHex == 64
+  and type(devPubHex) == "string" and #devPubHex == 64)
 eq("the fresh account has empty slots", #(link.slots or { 1 }), 0)
 
 -- ------------------------------------------------------- upload
@@ -163,6 +168,37 @@ link4:login(NAME, "hunter2-e2e")
 pump(link4, function(l) return l.state == "error" end, 20)
 eq("a wrong pin fails CLOSED before any credential is sent",
   link4.errorCode, "bad_identity")
+
+-- ------------------------------------------------------- device signature
+
+-- A returning ENROLLED device logs in by SIGNING the fresh nonce -- prove it
+-- authenticated by the SIGNATURE, not the password, by handing it a WRONG
+-- verifier alongside the right device key. If it still reaches ready, the
+-- signature is what let it in.
+do
+  local Crypto = SAVESYNC_INCLUDE("src/crypto.lua")
+  local device = {
+    seed = Crypto.fromHex(devSeedHex),
+    pub = Crypto.fromHex(devPubHex),
+    enrolled = true,
+  }
+  local link6 = Link.new({ host = host, port = tonumber(port), pin = pin, version = "2.0.0-e2e" })
+  -- a deliberately bogus stored verifier; only the device signature is valid
+  link6:loginStored(NAME, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", device)
+  check("a returning device signs in by SIGNATURE, not password",
+    pump(link6, function(l) return l:ready() or l.state == "error" end, 30),
+    link6.status)
+  eq("and reaches ready with a wrong password but a valid device signature",
+    link6.state, "ready", link6.errorCode)
+  link6:disconnect()
+
+  -- and a device with NO valid signature and a wrong password is refused
+  local link7 = Link.new({ host = host, port = tonumber(port), pin = pin, version = "2.0.0-e2e" })
+  link7:login(NAME, "definitely-not-the-password")
+  pump(link7, function(l) return l.state == "error" or l:ready() end, 30)
+  eq("wrong password with no device signature is still refused",
+    link7.state, "error")
+end
 
 -- ------------------------------------------------------- name taken
 

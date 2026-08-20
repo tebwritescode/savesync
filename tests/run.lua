@@ -114,6 +114,7 @@ local MOD_FILES = {
   "main.lua", "src/sync.lua", "src/store.lua", "src/ui.lua", "src/gate.lua",
   "src/snapshot.lua", "src/autosave.lua", "src/util.lua", "src/json.lua",
   "src/serverlink.lua", "src/net.lua", "src/tunnel.lua", "src/crypto.lua",
+  "src/authshare.lua",
 }
 for _, file in ipairs(MOD_FILES) do
   local fh = io.open(ROOT .. file, "rb")
@@ -212,6 +213,52 @@ eq("assess: no record, differ -> ASK",  A("b", "c", nil), "ask_both")
 -- A fresh device (no local copy) adopting a server save is a download and
 -- downloads always ask; the UI reaches that flow explicitly, so assess only
 -- ever compares real hashes. nil local means "not this function's case".
+
+
+-- ----------------------------------------------------- shared login (authshare)
+--
+-- Two mods in one Lua state: one is signed in, the other has no account and
+-- must ADOPT the first's credential through the exports channel, not prompt.
+
+local AuthShare = SAVESYNC_INCLUDE("src/authshare.lua")
+
+-- a fake mod that publishes a credential and can find a sibling
+local function fakeMod(id, cred, siblings)
+  local m = { id = id, exports = {} }
+  m.find = function(a, b)
+    local otherId = (b == nil) and a or b
+    local sib = siblings[otherId]
+    if not sib then return nil end
+    return { id = otherId, version = "1", exports = sib.exports }
+  end
+  AuthShare.publish(m, function() return cred end)
+  return m
+end
+
+local world = {}
+local gen1 = fakeMod("gen1mmo",
+  { name = "Ash", verifier = "VER", deviceSeed = "aa", deviceEnrolled = true }, world)
+local saves = fakeMod("savesync", nil, world)
+world.gen1mmo, world.savesync = gen1, saves
+
+local adopted, fromId = AuthShare.adopt(saves, "savesync")
+check("authshare: a signed-out mod adopts a sibling's credential",
+  type(adopted) == "table" and adopted.name == "Ash")
+eq("authshare: it carries the verifier, never a password", adopted and adopted.verifier, "VER")
+eq("authshare: and the device key travels too", adopted and adopted.deviceSeed, "aa")
+eq("authshare: naming the sibling it came from", fromId, "gen1mmo")
+
+-- a mod never adopts from ITSELF (selfId excluded)
+local onlyMe = AuthShare.adopt(gen1, "gen1mmo")
+check("authshare: a mod does not adopt its own export", onlyMe == nil)
+
+-- signed-out siblings offer nothing
+local emptyWorld = {}
+local a2 = fakeMod("savesync", nil, emptyWorld)
+local b2 = fakeMod("gen1mmo", nil, emptyWorld)
+emptyWorld.savesync, emptyWorld.gen1mmo = a2, b2
+check("authshare: nothing to adopt when no sibling is signed in",
+  AuthShare.adopt(a2, "savesync") == nil)
 
 -- ------------------------------------------------------------- report
 

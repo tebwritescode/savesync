@@ -34,6 +34,7 @@ local Store = SAVESYNC_INCLUDE("src/store.lua")
 local Snapshot = SAVESYNC_INCLUDE("src/snapshot.lua")
 local Autosave = SAVESYNC_INCLUDE("src/autosave.lua")
 local Gate = SAVESYNC_INCLUDE("src/gate.lua")
+local AuthShare = SAVESYNC_INCLUDE("src/authshare.lua")
 local installScreen = SAVESYNC_INCLUDE("src/ui.lua")
 
 -- Hand the engine's checkpoint API to the snapshot module.  `mod.checkpoints`
@@ -199,6 +200,22 @@ end)
 -- Boot: check the cloud once, early, while the player is still on the title
 -- screen and a download can be applied without argument.
 mod.events:on("game.ready", function()
+  -- SHARED LOGIN. If SaveSync has no account of its own but a sibling mod
+  -- (Gen1MMO, or a future one) is already signed into this server, adopt its
+  -- credential silently -- logging into one mod logs into them all. Both mods
+  -- have finished loading by game.ready, so the sibling's export is reachable.
+  if not Sync.configured() then
+    local cred = AuthShare.adopt(mod, "savesync")
+    if cred then
+      local c = Store.config()
+      c.account = {
+        name = cred.name, verifier = cred.verifier,
+        deviceSeed = cred.deviceSeed, devicePub = cred.devicePub,
+        deviceEnrolled = cred.deviceEnrolled,
+      }
+      Store.saveConfig(c)
+    end
+  end
   -- The second argument marks this as the BOOT check, which is what the
   -- CONTINUE gate waits on. The title screen is also the only place a
   -- download can be applied, so this is the one sync that can actually fix a
@@ -223,4 +240,7 @@ mod.exports = {
   version = ((mod:read("manifest.json") or ""):match('"version"%s*:%s*"([^"]+)"'))
     or "?",
 }
+-- Publish this device's credential so a sibling mod can adopt it (shared
+-- login). get() reads the live config, so a sign-in AFTER load is visible.
+AuthShare.publish(mod, function() return Store.config().account end)
 return mod.exports

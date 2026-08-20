@@ -550,6 +550,76 @@ function Tunnel.edVerify(pin, msg, sig)
   return edPack(p) == sig:sub(1, 32)
 end
 
+-- ------------------------------------------------ Ed25519 SIGNING
+--
+-- The device-key half of the passkey auth (server verifies against a stored
+-- public key). TweetNaCl crypto_sign, in the same numeric model as verify
+-- above: a 32-byte seed expands via SHA-512 into a clamped scalar `a` and a
+-- prefix; the public key is [a]B. This is validated byte-for-byte against
+-- Node's crypto in tests/love_stub / the live e2e -- a wrong port fails the
+-- server's signature check, not silently.
+
+-- Clamp the low 32 bytes of the seed hash into a valid scalar (RFC 8032).
+local function clampScalar(bytes)
+  bytes[1]  = bytes[1] % 256
+  bytes[1]  = bytes[1] - (bytes[1] % 8)          -- clear low 3 bits
+  bytes[32] = bytes[32] % 64 + 64                -- clear bit 255, set bit 254
+  return bytesToStr(bytes, 32)
+end
+
+--- Derive the 32-byte Ed25519 PUBLIC key for a 32-byte seed.
+function Tunnel.edPublicKey(seed)
+  local h = sha512(seed)
+  local a = {}
+  for i = 1, 32 do a[i] = h:byte(i) end
+  local scalar = clampScalar(a)
+  local p = { gf(), gf(), gf(), gf() }
+  edScalarbase(p, scalar)
+  return edPack(p)
+end
+
+-- 64-byte scalar mul-add mod L: out = (a*b + c) mod L, TweetNaCl's inner
+-- loop from crypto_sign. a,b,c are 32-byte strings (little-endian scalars).
+local function mulAddModL(aStr, bStr, cStr)
+  local x = {}
+  for i = 1, 64 do x[i] = 0 end
+  local a, b, c = {}, {}, {}
+  for i = 1, 32 do a[i] = aStr:byte(i); b[i] = bStr:byte(i); c[i] = cStr:byte(i) end
+  for i = 1, 32 do
+    for j = 1, 32 do
+      x[i + j - 1] = x[i + j - 1] + a[i] * b[j]
+    end
+  end
+  for i = 1, 32 do x[i] = x[i] + c[i] end
+  -- reduce the 64-byte value mod L (same modL TweetNaCl uses; reuse `reduce`
+  -- by packing x back to a 64-byte string).
+  local packed = {}
+  for i = 1, 64 do packed[i] = x[i] % 256; local carry = math.floor(x[i] / 256)
+    if i < 64 then x[i + 1] = x[i + 1] + carry end end
+  return reduce(bytesToStr(packed, 64))
+end
+
+--- Sign `msg` with a 32-byte seed. Returns the 64-byte signature R || S.
+function Tunnel.edSign(seed, msg)
+  local h = sha512(seed)
+  local a = {}
+  for i = 1, 32 do a[i] = h:byte(i) end
+  local scalar = clampScalar(a)
+  local prefix = h:sub(33, 64)
+  local pub = Tunnel.edPublicKey(seed)
+
+  -- r = H(prefix || msg); R = [r]B
+  local r = reduce(sha512(prefix .. msg))
+  local rp = { gf(), gf(), gf(), gf() }
+  edScalarbase(rp, r)
+  local R = edPack(rp)
+
+  -- S = (r + H(R || A || msg) * a) mod L
+  local hram = reduce(sha512(R .. pub .. msg))
+  local S = mulAddModL(hram, scalar, r)
+  return R .. S
+end
+
 -- ------------------------------------------------ key schedule + session
 
 local Crypto = SAVESYNC_INCLUDE("src/crypto.lua")
